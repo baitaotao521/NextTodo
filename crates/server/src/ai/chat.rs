@@ -2,8 +2,8 @@
 //! shown of it. See `docs/ai.md#对话`.
 
 use nexttodo_core::board::Board;
-use nexttodo_core::model::{AiJobId, FolderId, JobText, Task};
-use rusqlite::{Connection, params};
+use nexttodo_core::model::{AiChatId, AiJobId, FolderId, JobText, Task};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
@@ -46,6 +46,7 @@ impl Role {
 #[ts(export, rename = "AiMessage")]
 pub struct Message {
     pub id: String,
+    pub chat_id: AiChatId,
     pub role: Role,
     pub content: String,
     /// The tidying this reply's changes wait on, when it had any.
@@ -89,55 +90,107 @@ fn tidy_ask(ask: Ask) -> Option<Ask> {
     Some(Ask { question: question.to_owned(), options, recommended: 0 })
 }
 
-/// One conversation of the user's, for the page that manages them: where it is, how much was said,
-/// and the last word.
+/// One conversation of the user's, for the page that manages them: where it is, what it is called,
+/// how much was said, and the last word.
 #[derive(Clone, Debug, Serialize, TS)]
 #[ts(export, rename = "AiChatSummary")]
 pub struct Summary {
+    pub id: AiChatId,
     pub folder_id: Option<FolderId>,
+    pub title: String,
     pub messages: usize,
     pub last_role: Role,
     pub last: String,
     pub updated_at: i64,
 }
 
-/// The conversations the user has, newest first, a row for each folder and the root.
+/// A conversation of a folder's, enough to keep talking in it.
+#[derive(Clone, Debug)]
+pub struct Chat {
+    pub id: AiChatId,
+    pub folder_id: Option<FolderId>,
+    pub title: String,
+}
+
+/// A title from the first thing said: its first non-empty line, short enough for a list.
+pub fn title_from(text: &str) -> String {
+    let line = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let title: String = line.chars().take(80).collect();
+    if title.is_empty() { "新对话".to_owned() } else { title }
+}
+
+/// Keeps a new conversation, with `title` as its name, and gives it back.
+pub fn create(c: &Connection, owner: &str, folder: Option<FolderId>, title: String, now: i64) -> rusqlite::Result<Chat> {
+    let id = AiChatId::try_from(Uuid::now_v7().to_string()).expect("a UUIDv7 is a chat id");
+    let title: String = title.chars().take(80).collect();
+    let title = if title.is_empty() { "新对话".to_owned() } else { title };
+    c.execute(
+        "INSERT INTO ai_chats (id, owner_id, folder_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id.as_str(), owner, folder, title, now, now],
+    )?;
+    Ok(Chat { id, folder_id: folder, title })
+}
+
+/// The conversation `id` of `owner`'s, if it is theirs.
+pub fn get(c: &Connection, owner: &str, id: AiChatId) -> rusqlite::Result<Option<Chat>> {
+    c.query_row("SELECT id, folder_id, title FROM ai_chats WHERE id = ?1 AND owner_id = ?2", params![id.as_str(), owner], |r| {
+        Ok(Chat { id: r.get(0)?, folder_id: r.get(1)?, title: r.get(2)? })
+    })
+    .optional()
+}
+
+/// The newest conversation of `folder` (`None` for the root), if there is one.
+pub fn latest(c: &Connection, owner: &str, folder: Option<FolderId>) -> rusqlite::Result<Option<Chat>> {
+    c.query_row(
+        "SELECT id, folder_id, title FROM ai_chats
+         WHERE owner_id = ?1 AND folder_id IS ?2 ORDER BY updated_at DESC, id DESC LIMIT 1",
+        params![owner, folder],
+        |r| Ok(Chat { id: r.get(0)?, folder_id: r.get(1)?, title: r.get(2)? }),
+    )
+    .optional()
+}
+
+/// The conversations the user has, newest first, each with its last word.
 pub fn summaries(c: &Connection, owner: &str) -> rusqlite::Result<Vec<Summary>> {
     let mut stmt = c.prepare_cached(
-        "SELECT m1.folder_id, COUNT(*), MAX(m1.created_at),
-            (SELECT m2.role FROM ai_messages m2
-              WHERE m2.owner_id = m1.owner_id AND m2.folder_id IS m1.folder_id
-              ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1),
-            (SELECT substr(m2.content, 1, 160) FROM ai_messages m2
-              WHERE m2.owner_id = m1.owner_id AND m2.folder_id IS m1.folder_id
-              ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1)
-         FROM ai_messages m1 WHERE m1.owner_id = ?1
-         GROUP BY m1.folder_id ORDER BY MAX(m1.created_at) DESC",
+        "SELECT c.id, c.folder_id, c.title, COUNT(m.id),
+            (SELECT x.role FROM ai_messages x
+              WHERE x.chat_id = c.id ORDER BY x.created_at DESC, x.id DESC LIMIT 1),
+            (SELECT substr(x.content, 1, 160) FROM ai_messages x
+              WHERE x.chat_id = c.id ORDER BY x.created_at DESC, x.id DESC LIMIT 1),
+            c.updated_at
+         FROM ai_chats c LEFT JOIN ai_messages m ON m.chat_id = c.id
+         WHERE c.owner_id = ?1
+         GROUP BY c.id HAVING COUNT(m.id) > 0
+         ORDER BY c.updated_at DESC, c.id DESC",
     )?;
     let rows = stmt.query_map([owner], |r| {
-        let role = Role::parse(&r.get::<_, String>(3)?).ok_or(rusqlite::Error::InvalidQuery)?;
+        let title: String = r.get(2)?;
+        let role = Role::parse(&r.get::<_, String>(4)?).ok_or(rusqlite::Error::InvalidQuery)?;
         Ok(Summary {
-            folder_id: r.get(0)?,
-            messages: r.get::<_, i64>(1)? as usize,
+            id: r.get(0)?,
+            folder_id: r.get(1)?,
+            title: if title.is_empty() { "新对话".to_owned() } else { title },
+            messages: r.get::<_, i64>(3)? as usize,
             last_role: role,
-            last: r.get(4)?,
-            updated_at: r.get(2)?,
+            last: r.get(5)?,
+            updated_at: r.get(6)?,
         })
     })?;
     rows.collect()
 }
 
-/// The conversation in `folder` (`None` for the root), oldest first.
-pub fn load(c: &Connection, owner: &str, folder: Option<FolderId>) -> rusqlite::Result<Vec<Message>> {
+/// The conversation's messages, oldest first.
+pub fn load(c: &Connection, owner: &str, chat: AiChatId) -> rusqlite::Result<Vec<Message>> {
     let mut stmt = c.prepare_cached(
-        "SELECT id, role, content, created_at, job_id, ask FROM ai_messages
-         WHERE owner_id = ?1 AND folder_id IS ?2 ORDER BY created_at DESC, id DESC LIMIT ?3",
+        "SELECT id, role, content, created_at, job_id, ask, chat_id FROM ai_messages
+         WHERE owner_id = ?1 AND chat_id = ?2 ORDER BY created_at DESC, id DESC LIMIT ?3",
     )?;
     let mut messages: Vec<Message> = stmt
-        .query_map(params![owner, folder, i64::try_from(KEPT).expect("fits")], |r| {
+        .query_map(params![owner, chat.as_str(), i64::try_from(KEPT).expect("fits")], |r| {
             let role = Role::parse(&r.get::<_, String>(1)?).ok_or(rusqlite::Error::InvalidQuery)?;
             let ask = r.get::<_, Option<String>>(5)?.and_then(|a| serde_json::from_str(&a).ok());
-            Ok(Message { id: r.get(0)?, role, content: r.get(2)?, created_at: r.get(3)?, job_id: r.get(4)?, ask })
+            Ok(Message { id: r.get(0)?, chat_id: r.get(6)?, role, content: r.get(2)?, created_at: r.get(3)?, job_id: r.get(4)?, ask })
         })?
         .collect::<Result<_, _>>()?;
     messages.reverse();
@@ -146,24 +199,48 @@ pub fn load(c: &Connection, owner: &str, folder: Option<FolderId>) -> rusqlite::
 
 /// Keeps `content` as the latest message of the conversation, and gives it back with its id. Older
 /// ones than the `KEPT` latest go: they are no longer shown, and the table would only grow.
-pub fn add(c: &Connection, owner: &str, folder: Option<FolderId>, role: Role, content: &str, now: i64) -> rusqlite::Result<Message> {
-    let message = Message { id: Uuid::now_v7().to_string(), role, content: content.to_owned(), job_id: None, ask: None, created_at: now };
+pub fn add(c: &Connection, owner: &str, chat: &Chat, role: Role, content: &str, now: i64) -> rusqlite::Result<Message> {
+    let message = Message {
+        id: Uuid::now_v7().to_string(),
+        chat_id: chat.id.clone(),
+        role,
+        content: content.to_owned(),
+        job_id: None,
+        ask: None,
+        created_at: now,
+    };
     c.execute(
-        "INSERT INTO ai_messages (id, owner_id, folder_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![message.id, owner, folder, role.as_str(), message.content, message.created_at],
+        "INSERT INTO ai_messages (id, owner_id, folder_id, chat_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![message.id, owner, chat.folder_id, message.chat_id.as_str(), role.as_str(), message.content, message.created_at],
     )?;
     c.execute(
-        "DELETE FROM ai_messages WHERE owner_id = ?1 AND folder_id IS ?2 AND id NOT IN (
-             SELECT id FROM ai_messages WHERE owner_id = ?1 AND folder_id IS ?2 ORDER BY created_at DESC, id DESC LIMIT ?3
+        "UPDATE ai_chats SET updated_at = max(?2, updated_at + 1) WHERE id = ?1 AND owner_id = ?3",
+        params![message.chat_id.as_str(), now, owner],
+    )?;
+    c.execute(
+        "DELETE FROM ai_messages WHERE owner_id = ?1 AND chat_id = ?2 AND id NOT IN (
+             SELECT id FROM ai_messages WHERE owner_id = ?1 AND chat_id = ?2 ORDER BY created_at DESC, id DESC LIMIT ?3
          )",
-        params![owner, folder, i64::try_from(KEPT).expect("fits")],
+        params![owner, message.chat_id.as_str(), i64::try_from(KEPT).expect("fits")],
     )?;
     Ok(message)
 }
 
-pub fn clear(c: &Connection, owner: &str, folder: Option<FolderId>) -> rusqlite::Result<()> {
-    c.execute("DELETE FROM ai_messages WHERE owner_id = ?1 AND folder_id IS ?2", params![owner, folder])?;
+/// Forgets `chat` and its messages. Its pending jobs go first, in the caller.
+pub fn delete(c: &Connection, owner: &str, chat: AiChatId) -> rusqlite::Result<()> {
+    c.execute("DELETE FROM ai_messages WHERE owner_id = ?1 AND chat_id = ?2", params![owner, chat.as_str()])?;
+    c.execute("DELETE FROM ai_chats WHERE id = ?1 AND owner_id = ?2", params![chat.as_str(), owner])?;
     Ok(())
+}
+
+/// The jobs the conversation's replies still wait on, for deleting them with it. A job already
+/// taken is gone from `ai_jobs` and left off, though the message still remembers its id.
+pub fn job_ids(c: &Connection, owner: &str, chat: AiChatId) -> rusqlite::Result<Vec<AiJobId>> {
+    let mut stmt = c.prepare_cached(
+        "SELECT DISTINCT m.job_id FROM ai_messages m JOIN ai_jobs j ON j.id = m.job_id
+         WHERE m.owner_id = ?1 AND m.chat_id = ?2 AND m.job_id IS NOT NULL",
+    )?;
+    stmt.query_map(params![owner, chat.as_str()], |r| r.get(0))?.collect()
 }
 
 /// Ties a reply to the tidying its changes wait on, and the question it asks.
@@ -399,9 +476,11 @@ mod tests {
     #[test]
     fn a_long_conversation_still_fits_a_request() {
         use super::{Message, Role, request};
+        use nexttodo_core::model::AiChatId;
         let messages: Vec<Message> = (0..20)
             .map(|i| Message {
                 id: i.to_string(),
+                chat_id: AiChatId::try_from(format!("chat-{i}")).expect("a chat id"),
                 role: if i % 2 == 0 { Role::User } else { Role::Assistant },
                 content: "字".repeat(1_200),
                 job_id: None,

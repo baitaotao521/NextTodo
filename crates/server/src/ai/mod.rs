@@ -16,7 +16,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use nexttodo_core::board::{Board, Now};
-use nexttodo_core::model::{AiJobId, FolderId, JobKind, JobState, JobText, LocalTime, MutationId, NoteText, Suggestion};
+use nexttodo_core::model::{AiChatId, AiJobId, FolderId, JobKind, JobState, JobText, LocalTime, MutationId, NoteText, Suggestion};
 use nexttodo_core::ops::Op;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
@@ -610,6 +610,7 @@ pub async fn run(
 
 #[derive(Deserialize)]
 pub struct ChatQuery {
+    chat_id: Option<AiChatId>,
     folder_id: Option<FolderId>,
 }
 
@@ -623,7 +624,8 @@ fn seen(c: &Connection, owner: &str, folder: Option<FolderId>) -> Result<(), Api
     Ok(())
 }
 
-/// The user's conversations, for the page that manages them: one row per folder, newest first.
+/// The user's conversations, for the page that manages them: one row per conversation, newest
+/// first.
 pub async fn get_chats(State(st): State<AppState>, auth: Auth) -> Result<Json<Vec<chat::Summary>>, ApiError> {
     auth.require_device()?;
     let owner = auth.user_id;
@@ -639,20 +641,35 @@ pub async fn get_chats(State(st): State<AppState>, auth: Auth) -> Result<Json<Ve
         .map(Json)
 }
 
-/// The conversation kept in `folder`, oldest first.
+/// The conversation `chat_id`, or the newest one in `folder` for an older client, oldest first.
 pub async fn get_chat(State(st): State<AppState>, auth: Auth, Query(q): Query<ChatQuery>) -> Result<Json<Vec<chat::Message>>, ApiError> {
     auth.require_device()?;
     st.db
         .call(move |c| {
-            seen(c, &auth.user_id, q.folder_id)?;
-            Ok(chat::load(c, &auth.user_id, q.folder_id)?)
+            let chat = match q.chat_id {
+                Some(id) => chat::get(c, &auth.user_id, id)?,
+                None => {
+                    seen(c, &auth.user_id, q.folder_id)?;
+                    chat::latest(c, &auth.user_id, q.folder_id)?
+                }
+            };
+            let Some(chat) = chat else {
+                return Ok(Vec::new());
+            };
+            seen(c, &auth.user_id, chat.folder_id)?;
+            if let Some(folder) = q.folder_id
+                && chat.folder_id != Some(folder)
+            {
+                return Err(ApiError::not_found("对话不存在"));
+            }
+            Ok(chat::load(c, &auth.user_id, chat.id)?)
         })
         .await
         .map(Json)
 }
 
-/// Forgets the conversation in `folder`, and the changes it was still to confirm: neither is listed
-/// anywhere else, so they would be left with no way to reach them.
+/// Forgets the conversation, and the changes it was still to confirm: neither is listed anywhere
+/// else, so they would be left with no way to reach them.
 pub async fn clear_chat(State(st): State<AppState>, auth: Auth, Query(q): Query<ChatQuery>) -> Result<StatusCode, ApiError> {
     auth.require_device()?;
     let owner = auth.user_id;
@@ -660,17 +677,32 @@ pub async fn clear_chat(State(st): State<AppState>, auth: Auth, Query(q): Query<
     let to = st
         .db
         .call(move |c| {
-            seen(c, &owner, q.folder_id)?;
-            let jobs = store::chat_jobs(c, &owner, q.folder_id)?;
+            let chat = match q.chat_id {
+                Some(id) => chat::get(c, &owner, id)?,
+                None => {
+                    seen(c, &owner, q.folder_id)?;
+                    chat::latest(c, &owner, q.folder_id)?
+                }
+            };
+            let Some(chat) = chat else {
+                return Ok(Vec::new());
+            };
+            seen(c, &owner, chat.folder_id)?;
+            if let Some(folder) = q.folder_id
+                && chat.folder_id != Some(folder)
+            {
+                return Err(ApiError::not_found("对话不存在"));
+            }
+            let ids = chat::job_ids(c, &owner, chat.id.clone())?;
             let mut to = Vec::new();
-            if !jobs.is_empty() {
-                let ops: Vec<Op> = jobs.iter().map(|j| Op::AiJobDelete { id: j.id }).collect();
+            if !ids.is_empty() {
+                let ops: Vec<Op> = ids.into_iter().map(|id| Op::AiJobDelete { id }).collect();
                 let actor = actor(&owner);
                 let ran = mutate::run(c, &actor, &ops, now)?;
                 let recorded = mutate::record(c, &actor, MutationId(Uuid::now_v7()), &ops, &ran, now)?;
                 to = recorded.to;
             }
-            chat::clear(c, &owner, q.folder_id)?;
+            chat::delete(c, &owner, chat.id)?;
             Ok(to)
         })
         .await?;
@@ -684,8 +716,15 @@ pub async fn clear_chat(State(st): State<AppState>, auth: Auth, Query(q): Query<
 #[serde(deny_unknown_fields)]
 #[ts(export, rename = "AiChatInput")]
 pub struct ChatInput {
+    /// The conversation to add to; without one, an older client gets the newest in `folder`, and
+    /// `new_chat` starts another.
+    #[ts(optional)]
+    chat_id: Option<AiChatId>,
     #[ts(optional)]
     folder_id: Option<FolderId>,
+    /// Start a new conversation in `folder`, for a client that offers more than one.
+    #[ts(optional)]
+    new_chat: Option<bool>,
     text: JobText,
     local_time: LocalTime,
     #[ts(optional)]
@@ -703,7 +742,6 @@ fn event(value: Value) -> String {
 /// server, so another device carries it on.
 pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json<ChatInput>) -> Result<Response, ApiError> {
     auth.require_device()?;
-    let folder = input.folder_id;
     let config = match input.config {
         Some(config) => checked(config)?,
         None => {
@@ -718,24 +756,52 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
     let (now, owner, text) = (st.clock.now(), auth.user_id.clone(), input.text.as_str().to_owned());
     let local_time = input.local_time;
     let local_time_text = local_time.as_str().to_owned();
-    let prompt = st
+    let (prompt, chat) = st
         .db
         .call(move |c| {
-            seen(c, &owner, folder)?;
-            let mut history = chat::load(c, &owner, folder)?;
-            let said = chat::add(c, &owner, folder, chat::Role::User, &text, now)?;
+            let chat = match input.chat_id {
+                Some(id) => {
+                    let chat = chat::get(c, &owner, id)?.ok_or_else(|| ApiError::not_found("对话不存在"))?;
+                    if let Some(folder) = input.folder_id
+                        && chat.folder_id != Some(folder)
+                    {
+                        return Err(ApiError::not_found("对话不存在"));
+                    }
+                    chat
+                }
+                None => {
+                    if let Some(folder) = input.folder_id {
+                        seen(c, &owner, Some(folder))?;
+                    }
+                    if input.new_chat.unwrap_or(false) {
+                        chat::create(c, &owner, input.folder_id, chat::title_from(&text), now)?
+                    } else {
+                        match chat::latest(c, &owner, input.folder_id)? {
+                            Some(chat) => chat,
+                            None => chat::create(c, &owner, input.folder_id, chat::title_from(&text), now)?,
+                        }
+                    }
+                }
+            };
+            seen(c, &owner, chat.folder_id)?;
+            let mut history = chat::load(c, &owner, chat.id.clone())?;
+            let said = chat::add(c, &owner, &chat, chat::Role::User, &text, now)?;
             history.push(said);
             let snap = store::snapshot(c, &owner)?;
             let board = Board::new(&snap, Now::utc(now), &owner);
-            let notes = notes_along(&board, &store::ai_notes(c, &owner)?, folder);
-            Ok(chat::prompt(&board, folder, &notes, &local_time_text, &history))
+            let notes = notes_along(&board, &store::ai_notes(c, &owner)?, chat.folder_id);
+            Ok((chat::prompt(&board, chat.folder_id, &notes, &local_time_text, &history), chat))
         })
         .await?;
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     {
-        let (api, st, owner, tx) = (st.ai.api.clone(), st.clone(), auth.user_id, tx);
+        let (api, st, owner, tx, chat) = (st.ai.api.clone(), st.clone(), auth.user_id, tx, chat);
+        let chat_id = chat.id.clone();
         tokio::spawn(async move {
             let began = Instant::now();
+            // The conversation is known before the answer: a client that started it can keep it,
+            // even when the model fails before its `done`.
+            let _ = tx.send(event(json!({ "chat_id": chat_id.clone() }))).await;
             let push = tx.clone();
             let answer = tokio::task::spawn_blocking(move || {
                 let mut hidden = chat::Hidden::default();
@@ -760,16 +826,16 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
                     let done = st
                         .db
                         .call(move |c| {
-                            let message = chat::add(c, &owner, folder, chat::Role::Assistant, &text, now)?;
+                            let message = chat::add(c, &owner, &chat, chat::Role::Assistant, &text, now)?;
                             let job = if changes {
-                                let messages = chat::load(c, &owner, folder)?;
+                                let messages = chat::load(c, &owner, chat.id.clone())?;
                                 let id = AiJobId(Uuid::now_v7());
                                 let op = Op::AiJobCreate {
                                     id,
                                     kind: Some(JobKind::Tidy),
                                     text: chat::request(&messages),
                                     local_time,
-                                    folder_id: folder,
+                                    folder_id: chat.folder_id,
                                     chat: Some(true),
                                 };
                                 let actor = actor(&owner);
@@ -788,7 +854,7 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
                             if let Some((_, to)) = &job {
                                 st.hub.notify(to);
                             }
-                            let mut answer = json!({ "done": true, "message_id": message.id });
+                            let mut answer = json!({ "done": true, "message_id": message.id, "chat_id": chat_id.clone() });
                             if let Some(ask) = &ask {
                                 answer["ask"] = json!(ask);
                             }

@@ -1,28 +1,43 @@
 // A conversation with the model about a folder's tasks, answered as it is written, and kept on the
-// server so that another device carries it on. See docs/ai.md#对话.
+// server so that another device carries it on. A folder has many of them, listed on the left. See
+// docs/ai.md#对话.
 
-import { CircleAlert, LoaderCircle, Trash2 } from "lucide-react";
+import { CircleAlert, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { Fragment, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, apiStream } from "../api/http";
 import type { AiAsk } from "../api/types/AiAsk";
+import type { AiChatId } from "../api/types/AiChatId";
+import type { AiChatSummary } from "../api/types/AiChatSummary";
 import type { AiMessage } from "../api/types/AiMessage";
 import type { FolderId } from "../api/types/FolderId";
 import { localAiConfig } from "../ai";
 import { ChatEvents } from "../domain/chat";
-import { localTime } from "../domain/dates";
+import { ago, localTime } from "../domain/dates";
 import { useSession, useView } from "../session";
 import { Modal, forUser, useFeedback } from "../ui/feedback";
 import { composing } from "../ui/keys";
 import { Description as Markdown } from "../ui/lazy-markdown";
 import { Proposal } from "./suggestions";
 
-const ENDPOINT = (folder: FolderId | null) => `/ai/chat${folder ? `?folder_id=${folder}` : ""}`;
+const endpoint = (chat: AiChatId) => `/ai/chat?chat_id=${chat}`;
 
-/** The chat about `folder`, starting with `initial` said, or carrying on what was said there. */
-export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; initial?: string; onClose(): void }) {
+/** The chats about `folder`: starting a new one, carrying on `chat`, or the newest there. */
+export function AiChat({
+  folder,
+  initial,
+  chat,
+  onClose,
+}: {
+  folder: FolderId | null;
+  initial?: string;
+  chat?: AiChatId;
+  onClose(): void;
+}) {
   const { user } = useSession();
   const { board } = useView();
   const { snack, confirm } = useFeedback();
+  const [chats, setChats] = useState<AiChatSummary[] | null>(null);
+  const [chatId, setChatId] = useState<AiChatId | null>(null);
   const [messages, setMessages] = useState<AiMessage[] | null>(null);
   const [draft, setDraft] = useState("");
   /** The answer being written; in `messages` once it is done. */
@@ -36,12 +51,43 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
   const area = useRef<HTMLTextAreaElement>(null);
   const end = useRef<HTMLDivElement>(null);
 
+  const loadMessages = (id: AiChatId) => {
+    setMessages(null);
+    setError("");
+    api<AiMessage[]>("GET", endpoint(id)).then(setMessages, (e) => {
+      setMessages([]);
+      setError(forUser("读取对话", e));
+    });
+  };
+
+  const reloadChats = async () => {
+    try {
+      setChats((await api<AiChatSummary[]>("GET", "/ai/chats")).filter((c) => c.folder_id === folder));
+    } catch (e) {
+      setError(forUser("读取对话", e));
+    }
+  };
+
+  // The folder's conversations, newest first; open the one asked for, or the newest, or a new one.
   useEffect(() => {
     let here = true;
-    api<AiMessage[]>("GET", ENDPOINT(folder)).then(
-      (kept) => here && setMessages(kept),
+    started.current = false;
+    api<AiChatSummary[]>("GET", "/ai/chats").then(
+      (all) => {
+        if (!here) return;
+        const inFolder = all.filter((c) => c.folder_id === folder);
+        setChats(inFolder);
+        const pick = initial ? null : chat && inFolder.some((c) => c.id === chat) ? chat : (inFolder[0]?.id ?? null);
+        setChatId(pick);
+        if (pick) {
+          loadMessages(pick);
+        } else {
+          setMessages([]);
+        }
+      },
       (e) => {
         if (!here) return;
+        setChats([]);
         setMessages([]);
         setError(forUser("读取对话", e));
       },
@@ -50,7 +96,7 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
       here = false;
       stop.current?.abort();
     };
-  }, [folder]);
+  }, [folder, chat, initial]);
 
   // At the newest, and again as an answer is written.
   useEffect(() => {
@@ -83,7 +129,15 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
     setDraft("");
     setMessages((all) => [
       ...(all ?? []),
-      { id: `local-${Date.now()}`, role: "user", content: said, job_id: null, ask: null, created_at: Date.now() },
+      {
+        id: `local-${Date.now()}`,
+        chat_id: chatId ?? "local",
+        role: "user",
+        content: said,
+        job_id: null,
+        ask: null,
+        created_at: Date.now(),
+      },
     ]);
     const abort = new AbortController();
     stop.current = abort;
@@ -92,11 +146,13 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
     let messageId: string | undefined;
     let jobId: string | null = null;
     let ask: AiAsk | null = null;
+    let answerChatId = chatId;
     try {
       const res = await apiStream(
-        ENDPOINT(folder),
+        "/ai/chat",
         {
           ...(folder && { folder_id: folder }),
+          ...(chatId ? { chat_id: chatId } : { new_chat: true }),
           text: said,
           local_time: localTime(new Date()),
           ...(config && { config }),
@@ -121,6 +177,10 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
       const events = new ChatEvents();
       const take = (chunk: string) => {
         for (const event of events.push(chunk)) {
+          if (event.chat_id) {
+            answerChatId = event.chat_id;
+            setChatId(event.chat_id);
+          }
           if (event.delta) {
             answer += event.delta;
             setAnswering(answer);
@@ -149,6 +209,7 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
           ...(all ?? []),
           {
             id: messageId ?? `local-${Date.now()}`,
+            chat_id: answerChatId ?? "local",
             role: "assistant",
             content: answer,
             job_id: jobId,
@@ -161,6 +222,7 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
       setBusy(false);
       sending.current = false;
       stop.current = undefined;
+      if (answerChatId) void reloadChats();
     }
   }
 
@@ -169,19 +231,44 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
     void say(draft);
   };
 
+  /** A new, unsaved conversation; the first thing said makes it on the server. */
+  const newChat = () => {
+    if (busy) return;
+    started.current = true;
+    setChatId(null);
+    setMessages([]);
+    setAnswering("");
+    setError("");
+    setDraft("");
+    area.current?.focus();
+  };
+
+  const selectChat = (id: AiChatId) => {
+    if (busy || id === chatId) return;
+    started.current = true;
+    setChatId(id);
+    setAnswering("");
+    setDraft("");
+    loadMessages(id);
+  };
+
   const clear = async () => {
-    if (!(await confirm({ title: "清空这段对话？", body: "服务器上的记录一并删除，不能撤销。", ok: "清空", danger: true }))) return;
+    if (!chatId) return;
+    if (!(await confirm({ title: "清空这段对话？", body: "服务器上的记录和还没确认的修改一并删除，不能撤销。", ok: "清空", danger: true }))) return;
     try {
-      await api("DELETE", ENDPOINT(folder));
+      await api("DELETE", endpoint(chatId));
       setMessages([]);
+      setChatId(null);
+      setAnswering("");
       setError("");
+      await reloadChats();
       snack("已清空对话");
     } catch (e) {
       snack(forUser("清空对话", e));
     }
   };
 
-  const yours = (messages ?? []).some((m) => m.role === "user");
+  const now = new Date();
   const place = folder && board.folder(folder) ? board.place(folder) : board.folderName(null);
   return (
     <Modal
@@ -193,7 +280,7 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
         <div className="chat-foot">
           <div className="chat-tools">
             <span className="chat-place">{place}</span>
-            <button type="button" className="text-btn" onClick={clear} disabled={!yours || busy}>
+            <button type="button" className="text-btn" onClick={clear} disabled={!chatId || busy}>
               <Trash2 size={14} /> 清空
             </button>
           </div>
@@ -220,57 +307,88 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
         </div>
       }
     >
-      <div className="chat-log">
-        {messages === null ? (
-          <p className="empty">
-            <LoaderCircle className="spin" size={16} /> 正在读取对话…
-          </p>
-        ) : (
-          <>
-            {!messages.length && !answering && (
-              <p className="chat-hint">
-                AI 能看到这个文件夹里未完成的事项和你的说明。让它新建、修改、完成、删除或移动事项都可以；它会说明打算怎么改，并在回复下面列出待确认的修改，由你确认后应用。
+      <div className="chat-shell">
+        <aside className="chat-sessions">
+          <button type="button" className="tonal-btn chat-new" onClick={newChat} disabled={busy}>
+            <Plus size={15} /> 新对话
+          </button>
+          <div className="chat-session-list">
+            {chats === null ? (
+              <p className="chat-session-empty">
+                <LoaderCircle className="spin" size={14} /> 读取中…
               </p>
+            ) : chats.length === 0 ? (
+              <p className="chat-session-empty">还没有对话</p>
+            ) : (
+              chats.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`chat-session${c.id === chatId ? " on" : ""}`}
+                  disabled={busy}
+                  onClick={() => selectChat(c.id)}
+                >
+                  <span className="chat-session-title">{c.title || "新对话"}</span>
+                  <span className="chat-session-time">{ago(c.updated_at, now)}</span>
+                </button>
+              ))
             )}
-            {messages.map((m, i) => (
-              <Fragment key={m.id}>
-                {m.content && (
-                  <div className={`chat-msg ${m.role}`}>
-                    {m.role === "assistant" ? (
-                      <Suspense fallback={<p className="chat-text">{m.content}</p>}>
-                        <Markdown source={m.content} onChange={() => {}} />
-                      </Suspense>
-                    ) : (
-                      <p className="chat-text">{m.content}</p>
+          </div>
+        </aside>
+        <div className="chat-main">
+          <div className="chat-log">
+            {messages === null ? (
+              <p className="empty">
+                <LoaderCircle className="spin" size={16} /> 正在读取对话…
+              </p>
+            ) : (
+              <>
+                {!messages.length && !answering && (
+                  <p className="chat-hint">
+                    AI 能看到这个文件夹里未完成的事项和你的说明。让它新建、修改、完成、删除或移动事项都可以；它会说明打算怎么改，并在回复下面列出待确认的修改，由你确认后应用。
+                  </p>
+                )}
+                {messages.map((m, i) => (
+                  <Fragment key={m.id}>
+                    {m.content && (
+                      <div className={`chat-msg ${m.role}`}>
+                        {m.role === "assistant" ? (
+                          <Suspense fallback={<p className="chat-text">{m.content}</p>}>
+                            <Markdown source={m.content} onChange={() => {}} />
+                          </Suspense>
+                        ) : (
+                          <p className="chat-text">{m.content}</p>
+                        )}
+                      </div>
                     )}
+                    {m.role === "assistant" && m.job_id && <Proposal id={m.job_id} board={board} />}
+                    {m.role === "assistant" && m.ask && i === messages.length - 1 && (
+                      <AskOptions ask={m.ask} busy={busy} onPick={(option) => void say(option)} />
+                    )}
+                  </Fragment>
+                ))}
+                {answering && (
+                  <div className="chat-msg assistant writing">
+                    <Suspense fallback={<p className="chat-text">{answering}</p>}>
+                      <Markdown source={answering} onChange={() => {}} />
+                    </Suspense>
                   </div>
                 )}
-                {m.role === "assistant" && m.job_id && <Proposal id={m.job_id} board={board} />}
-                {m.role === "assistant" && m.ask && i === messages.length - 1 && (
-                  <AskOptions ask={m.ask} busy={busy} onPick={(option) => void say(option)} />
+                {busy && !answering && (
+                  <p className="chat-hint">
+                    <LoaderCircle className="spin" size={15} /> 正在想…
+                  </p>
                 )}
-              </Fragment>
-            ))}
-            {answering && (
-              <div className="chat-msg assistant writing">
-                <Suspense fallback={<p className="chat-text">{answering}</p>}>
-                  <Markdown source={answering} onChange={() => {}} />
-                </Suspense>
-              </div>
+                {error && (
+                  <p className="chat-error" role="alert">
+                    <CircleAlert size={15} /> {error}
+                  </p>
+                )}
+                <div ref={end} />
+              </>
             )}
-            {busy && !answering && (
-              <p className="chat-hint">
-                <LoaderCircle className="spin" size={15} /> 正在想…
-              </p>
-            )}
-            {error && (
-              <p className="chat-error" role="alert">
-                <CircleAlert size={15} /> {error}
-              </p>
-            )}
-            <div ref={end} />
-          </>
-        )}
+          </div>
+        </div>
       </div>
     </Modal>
   );

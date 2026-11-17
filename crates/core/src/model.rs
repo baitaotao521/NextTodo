@@ -173,6 +173,16 @@ text_type!(
     }
 );
 text_type!(
+    /// A conversation's id; the server gives it, UUIDv7 for new ones and an older form for those
+    /// carried over from before a folder had more than one.
+    AiChatId,
+    |s| if (1..=64).contains(&s.chars().count()) && !s.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        Ok(s)
+    } else {
+        Err("对话 ID 无效".into())
+    }
+);
+text_type!(
     /// What was written for AI to organize into tasks.
     JobText,
     |s| if s.trim().is_empty() {
@@ -210,10 +220,10 @@ text_type!(
     /// A calendar date `YYYY-MM-DD` in the user's local time.
     Date,
     |s| {
-        let digits = |r: std::ops::Range<usize>| {
-            s.get(r).filter(|p| p.bytes().all(|c| c.is_ascii_digit())).and_then(|p| p.parse::<u32>().ok())
-        };
-        let valid = match (s.len() == 10 && s.get(4..5) == Some("-") && s.get(7..8) == Some("-"), digits(0..4), digits(5..7), digits(8..10)) {
+        let digits =
+            |r: std::ops::Range<usize>| s.get(r).filter(|p| p.bytes().all(|c| c.is_ascii_digit())).and_then(|p| p.parse::<u32>().ok());
+        let valid = match (s.len() == 10 && s.get(4..5) == Some("-") && s.get(7..8) == Some("-"), digits(0..4), digits(5..7), digits(8..10))
+        {
             (true, Some(y), Some(m), Some(d)) => (1..=12).contains(&m) && (1..=days_in_month(y, m)).contains(&d),
             _ => false,
         };
@@ -224,9 +234,8 @@ text_type!(
     /// A time of day `HH:MM` in the user's local time.
     Time,
     |s| {
-        let digits = |r: std::ops::Range<usize>| {
-            s.get(r).filter(|p| p.bytes().all(|c| c.is_ascii_digit())).and_then(|p| p.parse::<u32>().ok())
-        };
+        let digits =
+            |r: std::ops::Range<usize>| s.get(r).filter(|p| p.bytes().all(|c| c.is_ascii_digit())).and_then(|p| p.parse::<u32>().ok());
         match (s.len() == 5 && s.get(2..3) == Some(":"), digits(0..2), digits(3..5)) {
             (true, Some(h), Some(m)) if h < 24 && m < 60 => Ok(s),
             _ => Err(format!("时间“{s}”格式错误，应为 HH:MM")),

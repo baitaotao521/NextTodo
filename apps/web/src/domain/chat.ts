@@ -9,6 +9,8 @@ export type ChatEvent = {
   error?: string;
   /** The reply's message on the server, once it is done. */
   message_id?: string;
+  /** The conversation it belongs to; sent before the answer too, so a new one can be kept. */
+  chat_id?: string;
   /** The tidying its changes wait on, when the turn had any. */
   job_id?: string | null;
   /** The question it asks the user, with the choices it suggests, when it asks one. */

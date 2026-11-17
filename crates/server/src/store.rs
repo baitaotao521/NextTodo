@@ -415,13 +415,6 @@ pub fn job_id_taken(c: &Connection, id: AiJobId) -> rusqlite::Result<bool> {
     c.query_row("SELECT EXISTS (SELECT 1 FROM ai_jobs WHERE id = ?1)", [id], |r| r.get(0))
 }
 
-/// The chat's own tidying requests in `folder`, which are confirmed under the replies, not listed.
-pub fn chat_jobs(c: &Connection, owner: &str, folder: Option<FolderId>) -> rusqlite::Result<Vec<AiJob>> {
-    c.prepare_cached(&format!("SELECT {JOB_COLUMNS} FROM ai_jobs WHERE owner_id = ?1 AND folder_id IS ?2 AND chat = 1"))?
-        .query_map(params![owner, folder], job_row)?
-        .collect()
-}
-
 pub fn insert_job(c: &Connection, owner: &str, j: &AiJob) -> rusqlite::Result<()> {
     c.execute(
         &format!("INSERT INTO ai_jobs (owner_id, {JOB_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"),

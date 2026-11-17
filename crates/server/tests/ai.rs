@@ -683,6 +683,67 @@ async fn a_chat_can_ask_with_choices_and_its_suggestion_first() {
 }
 
 #[tokio::test]
+async fn a_folder_has_many_conversations_each_with_its_own_messages() {
+    let (t, fake) = server();
+    let s = t.admin().await;
+    t.ok(&s, "add", json!({ "title": "读第三章", "folder": "/读书" })).await;
+    let folder = t.snapshot(&s).await["folders"][0]["id"].as_str().unwrap().to_owned();
+    t.call("PUT", "/ai/settings", Some(&s), Some(config())).await;
+
+    let post = |text: &str, extra: Value| {
+        let mut body = json!({ "folder_id": folder, "text": text, "local_time": "2026-11-04 16:30 星期三" });
+        if let Value::Object(more) = extra {
+            for (k, v) in more {
+                body[k] = v;
+            }
+        }
+        body
+    };
+    fake.answer(Ok("第一个回答"));
+    assert_eq!(t.call_raw("POST", "/ai/chat", Some(&s), Some(post("第一个话题", json!({ "new_chat": true })))).await.0, StatusCode::OK);
+    fake.answer(Ok("第二个回答"));
+    assert_eq!(t.call_raw("POST", "/ai/chat", Some(&s), Some(post("第二个话题", json!({ "new_chat": true })))).await.0, StatusCode::OK);
+
+    let list = t.call("GET", "/ai/chats", Some(&s), None).await.body;
+    let rows = list.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["title"], "第二个话题");
+    assert_eq!(rows[1]["title"], "第一个话题");
+    assert_eq!(rows[0]["folder_id"], folder);
+    let second = rows[0]["id"].as_str().unwrap().to_owned();
+    let first = rows[1]["id"].as_str().unwrap().to_owned();
+    assert_ne!(first, second);
+
+    // Each conversation keeps its own turns.
+    let first_messages = t.call("GET", &format!("/ai/chat?chat_id={first}"), Some(&s), None).await.body;
+    assert_eq!(first_messages.as_array().unwrap().len(), 2);
+    assert_eq!(first_messages[0]["content"], "第一个话题");
+    let second_messages = t.call("GET", &format!("/ai/chat?chat_id={second}"), Some(&s), None).await.body;
+    assert_eq!(second_messages[0]["content"], "第二个话题");
+
+    // Continuing an older conversation leaves the newer one alone, and makes it the newest.
+    fake.answer(Ok("继续第一个回答"));
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let more = json!({ "chat_id": first, "text": "继续第一个话题", "local_time": "2026-11-04 16:30 星期三" });
+    let (status, _, body) = t.call_raw("POST", "/ai/chat", Some(&s), Some(more)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(&format!("\"chat_id\":\"{first}\"")), "{body}");
+    let first_messages = t.call("GET", &format!("/ai/chat?chat_id={first}"), Some(&s), None).await.body;
+    assert_eq!(first_messages.as_array().unwrap().len(), 4);
+    let second_messages = t.call("GET", &format!("/ai/chat?chat_id={second}"), Some(&s), None).await.body;
+    assert_eq!(second_messages.as_array().unwrap().len(), 2);
+    // An older client without a chat id gets the newest conversation of the folder.
+    let legacy = t.call("GET", &format!("/ai/chat?folder_id={folder}"), Some(&s), None).await.body;
+    assert_eq!(legacy.as_array().unwrap().len(), 4);
+
+    // Clearing one conversation leaves the other.
+    assert_eq!(t.call("DELETE", &format!("/ai/chat?chat_id={second}"), Some(&s), None).await.status, StatusCode::NO_CONTENT);
+    let list = t.call("GET", "/ai/chats", Some(&s), None).await.body;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["id"], first);
+}
+
+#[tokio::test]
 async fn conversations_are_listed_by_folder_newest_first_and_cleared_one_at_a_time() {
     let (t, fake) = server();
     let s = t.admin().await;

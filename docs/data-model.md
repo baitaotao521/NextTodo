@@ -169,20 +169,33 @@ AI 整理的[说明](ai.md#说明)，每个用户每个文件夹（含根目录�
 
 唯一索引 `(user_id, ifnull(folder_id, ''))`。
 
+### ai_chats
+
+AI [对话](ai.md#对话)的目录，每个用户在每个文件夹（含根目录）可以有多段。没有消息的对话不出现。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| id | TEXT PK | 服务端生成 |
+| owner_id | TEXT → users | 对话的主人；共享文件夹里各成员各聊各的 |
+| folder_id | TEXT → folders，可空 | `NULL` 是根目录；删除文件夹时级联删除，撤销删除文件夹不恢复 |
+| title | TEXT | 第一句用户消息的第一行，去掉首尾空白，最多 80 字；还没有用户消息时是“新对话” |
+| created_at / updated_at | INTEGER | 毫秒；每加一条消息更新 `updated_at`，至少比原来的值大 1，用来排目录 |
+
 ### ai_messages
 
-AI [对话](ai.md#对话)的消息，每个用户每个文件夹一段。
+AI [对话](ai.md#对话)的消息，属于一段 `ai_chats`。
 
 | 列 | 类型 | 说明 |
 |---|---|---|
 | id | TEXT PK | 服务端生成 |
 | owner_id | TEXT → users | 说话的用户；共享文件夹里各成员各聊各的 |
 | folder_id | TEXT → folders，可空 | `NULL` 是根目录；删除文件夹时级联删除，撤销删除文件夹不恢复 |
+| chat_id | TEXT → ai_chats | 这段对话；删除对话时级联删除；旧数据在迁移时按用户和文件夹归成一段 |
 | role | TEXT | `user` 或 `assistant` |
 | content | TEXT | 消息原文；用户的最多 10000 字。助手的内容不含用来标记改动和提问的 `[[CHANGES]]`、`[[ASK]]` |
 | job_id | TEXT，可空 | 这条回复触发的整理请求（`ai_jobs.id`），待确认的修改显示在回复下面；应用或放弃后请求删除，消息留着，界面显示“修改已应用或已放弃” |
 | ask | TEXT，可空 | 这条回复的提问，JSON `{question, options, recommended}`；选项显示在回复下面，点了作为用户的话发出去。服务端把建议项放到第一个，`recommended` 记为 0 |
-| created_at | INTEGER | 毫秒；读取时从旧到新，最多 200 条，更早的删掉 |
+| created_at | INTEGER | 毫秒；每段对话读取时从旧到新，最多 200 条，更早的删掉 |
 
 ### mutations
 
