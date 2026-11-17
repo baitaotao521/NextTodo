@@ -613,6 +613,49 @@ async fn a_chat_streams_its_answer_and_keeps_the_conversation() {
 }
 
 #[tokio::test]
+async fn a_chat_turn_that_changes_things_lists_them_below_the_reply() {
+    let (t, fake) = server();
+    let s = t.admin().await;
+    t.ok(&s, "add", json!({ "title": "读第三章", "folder": "/读书" })).await;
+    let folder = t.snapshot(&s).await["folders"][0]["id"].as_str().unwrap().to_owned();
+    t.call("PUT", "/ai/settings", Some(&s), Some(config())).await;
+
+    // The model says what it means to change, and marks the turn; the user never sees the mark.
+    fake.answer(Ok("我会把 #1 的截止时间改到周五。\n\n[[CHANGES]]"));
+    fake.answer(Ok(r#"{"suggestions":[{"number":1,"due":"2026-11-06","reason":"你说周五"}]}"#));
+    let said = json!({ "folder_id": folder, "text": "把第三章改到周五", "local_time": "2026-11-04 16:30 星期三" });
+    let (status, _, body) = t.call_raw("POST", "/ai/chat", Some(&s), Some(said)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("[[CHANGES]]"), "{body}");
+    assert!(body.contains("\"job_id\""), "{body}");
+
+    // The reply is kept as said, tied to the tidying to confirm below it.
+    let chat = t.call("GET", &format!("/ai/chat?folder_id={folder}"), Some(&s), None).await.body;
+    let messages = chat.as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["content"], "我会把 #1 的截止时间改到周五。");
+    let job = messages[1]["job_id"].as_str().expect("the reply's tidying").to_owned();
+
+    // A chat's own tidying is not a request in the lists; it waits under the reply.
+    let snap = until(&t, &s, |s| s["ai_jobs"].as_array().unwrap().iter().any(|j| j["id"] == job && j["state"] == "ready")).await;
+    let shown = snap["ai_jobs"].as_array().unwrap().iter().find(|j| j["id"] == job).unwrap();
+    assert_eq!(shown["chat"], true);
+    assert_eq!(shown["suggestions"][0]["due"]["date"], "2026-11-06");
+
+    // The tidying was asked with the conversation, the user's last word included.
+    let asked = fake.asked();
+    let request = &asked.last().unwrap().1;
+    assert!(request.contains("以下是用户和 AI 助手的对话"), "{request}");
+    assert!(request.contains("把第三章改到周五"), "{request}");
+
+    // Clearing the chat takes the changes it was still to confirm with it: nowhere else lists them.
+    assert_eq!(t.call("DELETE", &format!("/ai/chat?folder_id={folder}"), Some(&s), None).await.status, StatusCode::NO_CONTENT);
+    assert!(t.snapshot(&s).await["ai_jobs"].as_array().unwrap().is_empty());
+    assert_eq!(t.call("GET", &format!("/ai/chat?folder_id={folder}"), Some(&s), None).await.body, json!([]));
+}
+
+#[tokio::test]
 async fn a_chat_takes_the_settings_a_device_keeps() {
     let fake = Arc::new(Fake::default());
     let t = TestApp::with_ai(Ai::new(None, fake.clone()));

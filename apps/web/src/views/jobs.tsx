@@ -66,7 +66,6 @@ function useJobActions() {
 
 /** Rows for `jobs`, inside a group; `path` shows each one's folder. */
 export function JobRows({ jobs, board, path }: { jobs: AiJob[]; board: Board; path?: boolean }) {
-  const actions = useJobActions();
   const [open, setOpen] = useState<AiJob | null>(null);
   // The job as it is now, or gone.
   const shown = open && board.snapshot.ai_jobs.find((j) => j.id === open.id);
@@ -78,7 +77,7 @@ export function JobRows({ jobs, board, path }: { jobs: AiJob[]; board: Board; pa
       ))}
       {shown &&
         (shown.state === "ready" ? (
-          <Suggestions job={shown} board={board} onRetry={() => actions.retry(shown)} onClose={close} />
+          <Suggestions job={shown} board={board} onClose={close} />
         ) : (
           <JobDetails job={shown} board={board} onClose={close} />
         ))}

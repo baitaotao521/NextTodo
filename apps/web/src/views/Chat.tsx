@@ -1,21 +1,19 @@
 // A conversation with the model about a folder's tasks, answered as it is written, and kept on the
 // server so that another device carries it on. See docs/ai.md#对话.
 
-import { CircleAlert, LoaderCircle, Sparkles, Trash2 } from "lucide-react";
-import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { v7 as uuidv7 } from "uuid";
+import { CircleAlert, LoaderCircle, Trash2 } from "lucide-react";
+import { Fragment, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, apiStream } from "../api/http";
 import type { AiMessage } from "../api/types/AiMessage";
 import type { FolderId } from "../api/types/FolderId";
-import type { Op } from "../api/types/Op";
 import { localAiConfig } from "../ai";
-import { ChatEvents, transcript } from "../domain/chat";
+import { ChatEvents } from "../domain/chat";
 import { localTime } from "../domain/dates";
-import { checkJobText } from "../domain/text";
-import { useCommit, useSession, useView } from "../session";
+import { useSession, useView } from "../session";
 import { Modal, forUser, useFeedback } from "../ui/feedback";
 import { composing } from "../ui/keys";
 import { Description as Markdown } from "../ui/lazy-markdown";
+import { Proposal } from "./suggestions";
 
 const ENDPOINT = (folder: FolderId | null) => `/ai/chat${folder ? `?folder_id=${folder}` : ""}`;
 
@@ -23,7 +21,6 @@ const ENDPOINT = (folder: FolderId | null) => `/ai/chat${folder ? `?folder_id=${
 export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; initial?: string; onClose(): void }) {
   const { user } = useSession();
   const { board } = useView();
-  const commit = useCommit();
   const { snack, confirm } = useFeedback();
   const [messages, setMessages] = useState<AiMessage[] | null>(null);
   const [draft, setDraft] = useState("");
@@ -85,12 +82,14 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
     setDraft("");
     setMessages((all) => [
       ...(all ?? []),
-      { id: `local-${Date.now()}`, role: "user", content: said, created_at: Date.now() },
+      { id: `local-${Date.now()}`, role: "user", content: said, job_id: null, created_at: Date.now() },
     ]);
     const abort = new AbortController();
     stop.current = abort;
     const config = localAiConfig(user.id);
     let answer = "";
+    let messageId: string | undefined;
+    let jobId: string | null = null;
     try {
       const res = await apiStream(
         ENDPOINT(folder),
@@ -125,6 +124,9 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
             setAnswering(answer);
           } else if (event.error) {
             setError(event.error);
+          } else if (event.done) {
+            messageId = event.message_id;
+            jobId = event.job_id ?? null;
           }
         }
       };
@@ -139,10 +141,16 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
       const name = typeof e === "object" && e !== null ? (e as { name?: string }).name : undefined;
       if (name !== "AbortError") setError(forUser("发送消息", e));
     } finally {
-      if (answer) {
+      if (answer || jobId) {
         setMessages((all) => [
           ...(all ?? []),
-          { id: `local-${Date.now()}`, role: "assistant", content: answer, created_at: Date.now() },
+          {
+            id: messageId ?? `local-${Date.now()}`,
+            role: "assistant",
+            content: answer,
+            job_id: jobId,
+            created_at: Date.now(),
+          },
         ]);
       }
       setAnswering("");
@@ -155,17 +163,6 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
   const send = (e: React.FormEvent) => {
     e.preventDefault();
     void say(draft);
-  };
-
-  /** The conversation as a tidying's request: the changes it comes up with wait for the user. */
-  const generate = () => {
-    const all = messages ?? [];
-    const c = checkJobText(transcript(all));
-    if (!c.ok) return snack(c.error);
-    const op: Op = { op: "ai_job.create", id: uuidv7(), kind: "tidy", text: c.value, local_time: localTime(new Date()), ...(folder && { folder_id: folder }) };
-    if (!commit([op])) return;
-    snack("已提交整理，完成后在列表顶部确认建议");
-    onClose();
   };
 
   const clear = async () => {
@@ -194,9 +191,6 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
             <span className="chat-place">{place}</span>
             <button type="button" className="text-btn" onClick={clear} disabled={!yours || busy}>
               <Trash2 size={14} /> 清空
-            </button>
-            <button type="button" className="tonal-btn" onClick={generate} disabled={!yours || busy}>
-              <Sparkles size={15} /> 生成建议
             </button>
           </div>
           <form className="chat-compose" onSubmit={send}>
@@ -231,19 +225,24 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
           <>
             {!messages.length && !answering && (
               <p className="chat-hint">
-                AI 能看到这个文件夹里未完成的事项和你的说明。让它新建、修改、完成、删除或移动事项都可以；说清楚以后点“生成建议”，由你逐条确认后再执行。
+                AI 能看到这个文件夹里未完成的事项和你的说明。让它新建、修改、完成、删除或移动事项都可以；它会说明打算怎么改，并在回复下面列出待确认的修改，由你确认后应用。
               </p>
             )}
             {messages.map((m) => (
-              <div key={m.id} className={`chat-msg ${m.role}`}>
-                {m.role === "assistant" ? (
-                  <Suspense fallback={<p className="chat-text">{m.content}</p>}>
-                    <Markdown source={m.content} onChange={() => {}} />
-                  </Suspense>
-                ) : (
-                  <p className="chat-text">{m.content}</p>
+              <Fragment key={m.id}>
+                {m.content && (
+                  <div className={`chat-msg ${m.role}`}>
+                    {m.role === "assistant" ? (
+                      <Suspense fallback={<p className="chat-text">{m.content}</p>}>
+                        <Markdown source={m.content} onChange={() => {}} />
+                      </Suspense>
+                    ) : (
+                      <p className="chat-text">{m.content}</p>
+                    )}
+                  </div>
                 )}
-              </div>
+                {m.role === "assistant" && m.job_id && <Proposal id={m.job_id} board={board} />}
+              </Fragment>
             ))}
             {answering && (
               <div className="chat-msg assistant writing">

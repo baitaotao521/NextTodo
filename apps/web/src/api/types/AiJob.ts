@@ -23,4 +23,8 @@ error: string | null,
 /**
  * Only when ready.
  */
-suggestions: Array<Suggestion> | null, created_at: number, updated_at: number, };
+suggestions: Array<Suggestion> | null, 
+/**
+ * Made by a chat's reply, to be confirmed there: not a request of its own in the lists.
+ */
+chat: boolean, created_at: number, updated_at: number, };

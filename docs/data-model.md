@@ -139,6 +139,7 @@
 | state | TEXT | `waiting`（等待）、`running`（整理中）、`failed`（失败）或 `ready`（整理文件夹的建议待确认） |
 | error | TEXT，可空 | 失败的原因，只在 `failed` 时有 |
 | suggestions | TEXT，可空 | 建议，JSON 数组，每条按独有的字段区分：修改 `{task, title?, description?, due?, done?, folder?, after, unlink?, reason, was}`（`due` 为 `null` 是清除）、删除 `{delete, reason, was}`、新建 `{create, title, description?, due?, after, before, reason}`（`create` 是新事项的 ID）、调整顺序 `{order, reason}`；`was` 是整理时事项的 `{title, description, due}`。只在 `ready` 时有 |
+| chat | INTEGER | 1 表示由[对话](ai.md#对话)的回复创建，待确认的修改显示在那条回复下面，不在列表里单独占一行；0 是普通请求 |
 | created_at / updated_at | INTEGER | |
 
 ### ai_settings
@@ -178,7 +179,8 @@ AI [对话](ai.md#对话)的消息，每个用户每个文件夹一段。
 | owner_id | TEXT → users | 说话的用户；共享文件夹里各成员各聊各的 |
 | folder_id | TEXT → folders，可空 | `NULL` 是根目录；删除文件夹时级联删除，撤销删除文件夹不恢复 |
 | role | TEXT | `user` 或 `assistant` |
-| content | TEXT | 消息原文；用户的最多 10000 字 |
+| content | TEXT | 消息原文；用户的最多 10000 字。助手的内容不含用来标记改动的 `[[CHANGES]]` |
+| job_id | TEXT，可空 | 这条回复触发的整理请求（`ai_jobs.id`），待确认的修改显示在回复下面；应用或放弃后请求删除，消息留着，界面显示“修改已应用或已放弃” |
 | created_at | INTEGER | 毫秒；读取时从旧到新，最多 200 条，更早的删掉 |
 
 ### mutations

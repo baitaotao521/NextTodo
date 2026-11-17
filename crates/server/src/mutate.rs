@@ -578,7 +578,7 @@ impl<'a> Cx<'a> {
                 let space = self.space(&owner, b.folder_id)?;
                 self.delete_dependency(d, &space)
             }
-            Op::AiJobCreate { id, kind, text, local_time, folder_id } => {
+            Op::AiJobCreate { id, kind, text, local_time, folder_id, chat } => {
                 if store::job_id_taken(self.c, *id)? {
                     return Err(ApiError::conflict("请求 ID 已存在"));
                 }
@@ -594,6 +594,7 @@ impl<'a> Cx<'a> {
                     state: JobState::Waiting,
                     error: None,
                     suggestions: None,
+                    chat: chat.unwrap_or(false),
                     created_at: self.now,
                     updated_at: self.now,
                 })

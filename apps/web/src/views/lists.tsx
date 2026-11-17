@@ -60,8 +60,8 @@ export function NextBody({ now }: { now: Date }) {
     const g = t.due ? dueKind(t.due, now) : "none";
     groups.set(g, [...(groups.get(g) ?? []), t]);
   }
-  // Every job not done yet, wherever it was submitted.
-  const jobs = board.snapshot.ai_jobs;
+  // Every job not done yet, wherever it was submitted; a chat's own are confirmed in the chat.
+  const jobs = board.snapshot.ai_jobs.filter((j) => !j.chat);
   return (
     <>
       {jobs.length > 0 && (
@@ -108,7 +108,7 @@ export function FolderBody({ folder, now }: { folder: FolderId | null; now: Date
     (t) => t.done_at === null,
   );
   const done = finished.filter((t) => !shown.has(t.id));
-  const jobs = board.snapshot.ai_jobs.filter((j) => j.folder_id === folder);
+  const jobs = board.snapshot.ai_jobs.filter((j) => j.folder_id === folder && !j.chat);
   // On a computer, the folders others share are in the sidebar.
   const wide = useWide();
   const theirs = folder === null && !wide ? board.sharedWithMe() : [];

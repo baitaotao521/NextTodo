@@ -161,6 +161,10 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         folder_id: Option<FolderId>,
+        /// Made by a chat's reply, to be confirmed there.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        chat: Option<bool>,
     },
     /// Puts a failed job, or a tidying with suggestions, back in the queue, with its text or folder
     /// changed if given.

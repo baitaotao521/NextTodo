@@ -52,7 +52,11 @@ assign?: Array<string>, unassign?: Array<string>, } | { "op": "task.delete", id:
 /**
  * Organizing when not given.
  */
-kind?: JobKind, text: JobText, local_time: LocalTime, folder_id?: FolderId, } | { "op": "ai_job.retry", id: AiJobId, text?: JobText, 
+kind?: JobKind, text: JobText, local_time: LocalTime, folder_id?: FolderId, 
+/**
+ * Made by a chat's reply, to be confirmed there.
+ */
+chat?: boolean, } | { "op": "ai_job.retry", id: AiJobId, text?: JobText, 
 /**
  * `null` is the root.
  */

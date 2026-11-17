@@ -292,6 +292,7 @@ class Applier {
           state: "waiting",
           error: null,
           suggestions: null,
+          chat: op.chat ?? false,
           created_at: now,
           updated_at: now,
         });

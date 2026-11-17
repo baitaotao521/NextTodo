@@ -146,7 +146,7 @@ export function AiPage() {
   return (
     <>
       <p className="empty">
-        在添加框点 ✦ 切到 AI 整理，写下一段话，先和模型聊清楚，再点“生成建议”整理成事项。原文、文件夹名、其中未完成的事项、这段对话和 AI 说明会发给这个服务商。<Help to="ai#key">如何获取 API 密钥</Help>
+        在添加框点 ✦ 切到 AI 整理，写下一段话，和模型聊清楚；AI 会在回复下面直接列出待确认的修改，确认后整理成事项。原文、文件夹名、其中未完成的事项、这段对话和 AI 说明会发给这个服务商。<Help to="ai#key">如何获取 API 密钥</Help>
       </p>
       <div className="field">
         服务商

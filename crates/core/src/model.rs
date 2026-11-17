@@ -760,6 +760,9 @@ pub struct AiJob {
     /// Only when ready.
     #[serde(default)]
     pub suggestions: Option<Vec<Suggestion>>,
+    /// Made by a chat's reply, to be confirmed there: not a request of its own in the lists.
+    #[serde(default)]
+    pub chat: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }

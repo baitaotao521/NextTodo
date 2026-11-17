@@ -1,15 +1,19 @@
-// A tidying's suggestions, each change to be taken or left, and those taken applied as one change
-// that can be undone. See docs/ai.md#整理文件夹.
+// A tidying's suggestions, each change to be taken or left, applied as one change that can be
+// undone: in a panel of its own, or under the chat reply that asked for it. See
+// docs/ai.md#对话 and docs/ai.md#整理文件夹.
 
+import { CircleAlert, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import type { AiJob } from "../api/types/AiJob";
+import type { AiJobId } from "../api/types/AiJobId";
 import type { Board } from "../domain/board";
 import { type Group, type Part, groups, ops } from "../domain/tidy";
 import { useCommit, useUndo } from "../session";
 import { Box } from "../ui/controls";
 import { Modal, useFeedback } from "../ui/feedback";
 
-export function Suggestions({ job: j, board, onRetry, onClose }: { job: AiJob; board: Board; onRetry(): void; onClose(): void }) {
+/** The checks of a tidying's suggestions and what taking them does. */
+function SuggestionBody({ job: j, board, onDone }: { job: AiJob; board: Board; onDone?(): void }) {
   const commit = useCommit();
   const undo = useUndo();
   const { snack } = useFeedback();
@@ -26,16 +30,20 @@ export function Suggestions({ job: j, board, onRetry, onClose }: { job: AiJob; b
     const r = commit(ops(taken, j, board));
     if (!r) return;
     snack({ text: `已应用 ${taken.length} 处修改`, action: "撤销", onAction: () => undo(r.id) });
-    onClose();
+    onDone?.();
   };
   const discard = () => {
     const r = commit([{ op: "ai_job.delete", id: j.id }]);
     if (r) snack({ text: "已放弃整理建议", action: "撤销", onAction: () => undo(r.id) });
-    onClose();
+    onDone?.();
+  };
+  const retry = () => {
+    commit([{ op: "ai_job.retry", id: j.id }]);
+    onDone?.();
   };
 
   return (
-    <Modal title="整理建议" onClose={onClose}>
+    <>
       <p className="empty">
         {shown.length ? "勾选要采纳的修改，一起应用；应用后可以撤销。" : "暂无可采纳的修改：AI 认为不需要改，或涉及的事项已完成、已删除。"}
       </p>
@@ -63,13 +71,56 @@ export function Suggestions({ job: j, board, onRetry, onClose }: { job: AiJob; b
         <button className="text-btn danger-text" onClick={discard}>
           放弃
         </button>
-        <button className="tonal-btn" onClick={() => (onRetry(), onClose())}>
+        <button className="tonal-btn" onClick={retry}>
           重新整理
         </button>
         <button className="filled-btn" disabled={!taken.length} onClick={apply}>
           应用 {taken.length} 处
         </button>
       </div>
+    </>
+  );
+}
+
+/** A tidying's suggestions in a panel of their own, from the job's row. */
+export function Suggestions({ job: j, board, onClose }: { job: AiJob; board: Board; onClose(): void }) {
+  return (
+    <Modal title="整理建议" onClose={onClose}>
+      <SuggestionBody job={j} board={board} onDone={onClose} />
     </Modal>
+  );
+}
+
+/** The suggestions a chat reply asked for, to be confirmed there; or how they stand. */
+export function Proposal({ id, board }: { id: AiJobId; board: Board }) {
+  const commit = useCommit();
+  const job = board.snapshot.ai_jobs.find((j) => j.id === id);
+  if (!job) return <p className="chat-proposal-gone">修改已应用或已放弃。</p>;
+  if (job.state === "failed") {
+    return (
+      <section className="chat-proposal">
+        <p className="chat-error">
+          <CircleAlert size={15} /> 整理失败：{job.error}
+        </p>
+        <div className="actions">
+          <button className="tonal-btn" onClick={() => commit([{ op: "ai_job.retry", id }])}>
+            重试
+          </button>
+        </div>
+      </section>
+    );
+  }
+  if (job.state !== "ready") {
+    return (
+      <p className="chat-hint">
+        <LoaderCircle className="spin" size={15} /> 正在整理建议…
+      </p>
+    );
+  }
+  return (
+    <section className="chat-proposal">
+      <h4>待确认的修改</h4>
+      <SuggestionBody job={job} board={board} />
+    </section>
   );
 }

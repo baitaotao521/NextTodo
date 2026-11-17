@@ -11,7 +11,7 @@ use nexttodo_core::model::{
 use rusqlite::{Connection, OptionalExtension, Params, Row, params};
 
 const FOLDER_COLUMNS: &str = "id, parent_id, name, sort_key, created_at, updated_at";
-const JOB_COLUMNS: &str = "id, folder_id, kind, text, local_time, state, error, suggestions, created_at, updated_at";
+const JOB_COLUMNS: &str = "id, folder_id, kind, text, local_time, state, error, suggestions, created_at, updated_at, chat";
 macro_rules! task_columns {
     () => {
         "id, number, folder_id, title, description, done_at, due_date, due_time, remind_before, sort_key, created_at, updated_at, created_via, updated_via, repeat_every, repeat_unit, repeat_from, repeat_days, completion_count, last_completed, repeat_monthdays, start_date, created_by, updated_by, start_time"
@@ -96,6 +96,7 @@ fn job_row(r: &Row) -> rusqlite::Result<AiJob> {
             .map_err(|e| rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e)))?,
         created_at: r.get(8)?,
         updated_at: r.get(9)?,
+        chat: r.get(10)?,
     })
 }
 
@@ -382,7 +383,7 @@ pub fn delete_dependency(c: &Connection, d: &Dependency) -> rusqlite::Result<()>
 /// The AI jobs in the subtree rooted at `id`, with whose they are.
 pub fn subtree_jobs(c: &Connection, id: FolderId) -> rusqlite::Result<Vec<(AiJob, String)>> {
     c.prepare_cached(&format!("{SUBTREE} SELECT {JOB_COLUMNS}, owner_id FROM ai_jobs WHERE folder_id IN (SELECT id FROM sub)"))?
-        .query_map([id], |r| Ok((job_row(r)?, r.get(10)?)))?
+        .query_map([id], |r| Ok((job_row(r)?, r.get(11)?)))?
         .collect()
 }
 
@@ -414,10 +415,30 @@ pub fn job_id_taken(c: &Connection, id: AiJobId) -> rusqlite::Result<bool> {
     c.query_row("SELECT EXISTS (SELECT 1 FROM ai_jobs WHERE id = ?1)", [id], |r| r.get(0))
 }
 
+/// The chat's own tidying requests in `folder`, which are confirmed under the replies, not listed.
+pub fn chat_jobs(c: &Connection, owner: &str, folder: Option<FolderId>) -> rusqlite::Result<Vec<AiJob>> {
+    c.prepare_cached(&format!("SELECT {JOB_COLUMNS} FROM ai_jobs WHERE owner_id = ?1 AND folder_id IS ?2 AND chat = 1"))?
+        .query_map(params![owner, folder], job_row)?
+        .collect()
+}
+
 pub fn insert_job(c: &Connection, owner: &str, j: &AiJob) -> rusqlite::Result<()> {
     c.execute(
-        &format!("INSERT INTO ai_jobs (owner_id, {JOB_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
-        params![owner, j.id, j.folder_id, j.kind, j.text, j.local_time, j.state, j.error, suggestions(j), j.created_at, j.updated_at],
+        &format!("INSERT INTO ai_jobs (owner_id, {JOB_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"),
+        params![
+            owner,
+            j.id,
+            j.folder_id,
+            j.kind,
+            j.text,
+            j.local_time,
+            j.state,
+            j.error,
+            suggestions(j),
+            j.created_at,
+            j.updated_at,
+            j.chat
+        ],
     )?;
     Ok(())
 }

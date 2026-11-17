@@ -770,5 +770,13 @@ a.text-btn { display: inline-flex; align-items: center; }
 .chat-compose { display: flex; align-items: flex-end; gap: 8px; }
 .chat-compose textarea { flex: 1; min-width: 0; max-height: calc(8 * 1.5em + 20px); resize: none; padding: 9px 14px; border: 0; border-radius: 20px; background: var(--surface-container); color: var(--on-surface); font: 400 15px/1.5 var(--font); outline: none; }
 .chat-compose .filled-btn { height: 38px; padding: 0 16px; flex: none; }
+.chat-proposal { align-self: flex-start; width: min(100%, 720px); max-width: 92%; padding: 12px 14px 6px; border: 1px solid var(--outline-variant); border-radius: 16px; background: var(--surface); }
+.chat-proposal h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--on-surface-variant); }
+.chat-proposal .empty { margin: 4px 0 8px; font-size: 14px; }
+.chat-proposal .group-title { margin: 14px 4px 6px; }
+.chat-proposal .suggestion-reason { margin: -4px 4px 8px; }
+.chat-proposal .group { margin: 0; }
+.chat-proposal .actions { margin: 14px -4px 0; }
+.chat-proposal-gone { align-self: flex-start; margin: 0; color: var(--outline); font-size: 13px; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

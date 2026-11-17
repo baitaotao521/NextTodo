@@ -635,16 +635,31 @@ pub async fn get_chat(State(st): State<AppState>, auth: Auth, Query(q): Query<Ch
         .map(Json)
 }
 
-/// Forgets the conversation in `folder`.
+/// Forgets the conversation in `folder`, and the changes it was still to confirm: neither is listed
+/// anywhere else, so they would be left with no way to reach them.
 pub async fn clear_chat(State(st): State<AppState>, auth: Auth, Query(q): Query<ChatQuery>) -> Result<StatusCode, ApiError> {
     auth.require_device()?;
-    st.db
+    let owner = auth.user_id;
+    let now = st.clock.now();
+    let to = st
+        .db
         .call(move |c| {
-            seen(c, &auth.user_id, q.folder_id)?;
-            chat::clear(c, &auth.user_id, q.folder_id)?;
-            Ok(StatusCode::NO_CONTENT)
+            seen(c, &owner, q.folder_id)?;
+            let jobs = store::chat_jobs(c, &owner, q.folder_id)?;
+            let mut to = Vec::new();
+            if !jobs.is_empty() {
+                let ops: Vec<Op> = jobs.iter().map(|j| Op::AiJobDelete { id: j.id }).collect();
+                let actor = actor(&owner);
+                let ran = mutate::run(c, &actor, &ops, now)?;
+                let recorded = mutate::record(c, &actor, MutationId(Uuid::now_v7()), &ops, &ran, now)?;
+                to = recorded.to;
+            }
+            chat::clear(c, &owner, q.folder_id)?;
+            Ok(to)
         })
-        .await
+        .await?;
+    st.hub.notify(&to);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// What the user says in a chat, with the settings kept on the device when they are not on the
@@ -683,8 +698,9 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
             k.config(key)
         }
     };
-    let (now, owner, text, local_time) =
-        (st.clock.now(), auth.user_id.clone(), input.text.as_str().to_owned(), input.local_time.as_str().to_owned());
+    let (now, owner, text) = (st.clock.now(), auth.user_id.clone(), input.text.as_str().to_owned());
+    let local_time = input.local_time;
+    let local_time_text = local_time.as_str().to_owned();
     let prompt = st
         .db
         .call(move |c| {
@@ -695,7 +711,7 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
             let snap = store::snapshot(c, &owner)?;
             let board = Board::new(&snap, Now::utc(now), &owner);
             let notes = notes_along(&board, &store::ai_notes(c, &owner)?, folder);
-            Ok(chat::prompt(&board, folder, &notes, &local_time, &history))
+            Ok(chat::prompt(&board, folder, &notes, &local_time_text, &history))
         })
         .await?;
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -705,19 +721,64 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
             let began = Instant::now();
             let push = tx.clone();
             let answer = tokio::task::spawn_blocking(move || {
-                api.chat_stream(&config, &prompt, false, TIMEOUT, &mut |piece| push.blocking_send(event(json!({ "delta": piece }))).is_ok())
+                let mut hidden = chat::Hidden::default();
+                let answer = api.chat_stream(&config, &prompt, false, TIMEOUT, &mut |piece| {
+                    let out = hidden.push(piece);
+                    out.is_empty() || push.blocking_send(event(json!({ "delta": out }))).is_ok()
+                });
+                (answer, hidden)
             })
             .await;
             let (last, ok) = match answer {
-                Ok(Ok(text)) => {
+                Ok((Ok(_), mut hidden)) => {
+                    let tail = hidden.finish();
+                    if !tail.is_empty() {
+                        let _ = tx.send(event(json!({ "delta": tail }))).await;
+                    }
+                    let text = hidden.shown().to_owned();
+                    let changes = hidden.changes();
                     let now = st.clock.now();
-                    let kept = st.db.call(move |c| Ok(chat::add(c, &owner, folder, chat::Role::Assistant, &text, now)?)).await;
-                    match kept {
-                        Ok(_) => (json!({ "done": true }), true),
+                    let done = st
+                        .db
+                        .call(move |c| {
+                            let message = chat::add(c, &owner, folder, chat::Role::Assistant, &text, now)?;
+                            let job = if changes {
+                                let messages = chat::load(c, &owner, folder)?;
+                                let id = AiJobId(Uuid::now_v7());
+                                let op = Op::AiJobCreate {
+                                    id,
+                                    kind: Some(JobKind::Tidy),
+                                    text: chat::request(&messages),
+                                    local_time,
+                                    folder_id: folder,
+                                    chat: Some(true),
+                                };
+                                let actor = actor(&owner);
+                                let ran = mutate::run(c, &actor, std::slice::from_ref(&op), now)?;
+                                let recorded = mutate::record(c, &actor, MutationId(Uuid::now_v7()), &[op], &ran, now)?;
+                                chat::attach_job(c, &message.id, id)?;
+                                Some((id, recorded.to))
+                            } else {
+                                None
+                            };
+                            Ok((message, job))
+                        })
+                        .await;
+                    match done {
+                        Ok((message, job)) => {
+                            if let Some((_, to)) = &job {
+                                st.hub.notify(to);
+                            }
+                            let mut answer = json!({ "done": true, "message_id": message.id });
+                            if let Some((id, _)) = job {
+                                answer["job_id"] = json!(id);
+                            }
+                            (answer, true)
+                        }
                         Err(e) => (json!({ "error": e.describe() }), false),
                     }
                 }
-                Ok(Err(f)) => (json!({ "error": f.message }), false),
+                Ok((Err(f), _)) => (json!({ "error": f.message }), false),
                 Err(e) => {
                     tracing::error!(error = %e, "chat task panicked");
                     (json!({ "error": "服务器错误，请稍后重试" }), false)
