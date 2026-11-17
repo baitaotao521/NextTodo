@@ -682,8 +682,9 @@ fn event(value: Value) -> String {
 }
 
 /// Says `text` in the conversation of `folder`, and answers with the model's reply as it is
-/// written: server-sent events with `{"delta": "…"}` each, then `{"done": true}` or `{"error": "…"}`.
-/// The conversation is kept on the server, so another device carries it on.
+/// written: server-sent events with `{"delta": "…"}` each, then `{"done": true, "message_id": "…"}`
+/// with `job_id` when the turn changes things, or `{"error": "…"}`. The conversation is kept on the
+/// server, so another device carries it on.
 pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json<ChatInput>) -> Result<Response, ApiError> {
     auth.require_device()?;
     let folder = input.folder_id;

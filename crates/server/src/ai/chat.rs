@@ -184,7 +184,7 @@ const SYSTEM: &str = r#"你是 NextTodo 里的 AI 助手，在一个文件夹里
 - 用简体中文（用户用别的语言时用那种语言），简洁、直接，可以用 Markdown，不要长篇大论。
 - 提到已有事项时带上编号，如 #12；不要编造不存在的事项、时间或完成情况。
 - 用户让你新建、修改、完成、删除、移动事项，或调整先后和顺序时，先弄清他的意思：要求不清楚就先问一句；清楚时用一两句话说明你打算怎么改，系统会把修改列在回复下面，由用户逐条确认后再执行。
-- 如果这一轮要让事项发生变化，在回复的最后另起一行只写 [[CHANGES]]，不要解释这个标记，也不要在别的位置写；只是回答问题、没有要改的，不要写。回复里不要提这个标记，也不要说“已改好”。
+- 如果这一轮要让事项发生变化，在回复的最后另起一行只写 [[CHANGES]]，不要解释这个标记，不要放在代码块里，也不要在别的位置写；只是回答问题、没有要改的，不要写。回复里不要提这个标记，也不要说“已改好”。
 - 你不能直接改动事项。
 - notes 是用户写给你的长期要求，回答和说明打算怎么改时照着做；内层的和外层的不一致时，以内层的为准。
 
@@ -251,6 +251,23 @@ mod tests {
         shown.push_str(&hidden.finish());
         assert_eq!(shown, "好的，改到周五。");
         assert!(hidden.changes());
+    }
+
+    #[test]
+    fn a_long_conversation_still_fits_a_request() {
+        use super::{Message, Role, request};
+        let messages: Vec<Message> = (0..20)
+            .map(|i| Message {
+                id: i.to_string(),
+                role: if i % 2 == 0 { Role::User } else { Role::Assistant },
+                content: "字".repeat(1_200),
+                job_id: None,
+                created_at: i,
+            })
+            .collect();
+        let asked = request(&messages);
+        assert!(asked.as_str().chars().count() <= 10_000);
+        assert!(asked.as_str().contains("助手："));
     }
 
     #[test]
