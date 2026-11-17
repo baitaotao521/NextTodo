@@ -6,9 +6,9 @@ describe("a chat's answer read as it comes", () => {
     const events = new ChatEvents();
     expect(events.push('data: {"delta":"你')).toEqual([]);
     expect(events.push('好"}\n\ndata: {"delta":"呀"}\n')).toEqual([{ delta: "你好" }]);
-    expect(events.push('\ndata: {"done":true,"message_id":"m1","job_id":"j1"}\n\n')).toEqual([
+    expect(events.push('\ndata: {"done":true,"message_id":"m1","job_id":"j1","ask":{"question":"选哪个？","options":["甲","乙"],"recommended":1}}\n\n')).toEqual([
       { delta: "呀" },
-      { done: true, message_id: "m1", job_id: "j1" },
+      { done: true, message_id: "m1", job_id: "j1", ask: { question: "选哪个？", options: ["甲", "乙"], recommended: 1 } },
     ]);
   });
 

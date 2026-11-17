@@ -27,6 +27,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/014_ai_chat.sql"),
     include_str!("../migrations/015_ai_job_chat.sql"),
     include_str!("../migrations/016_ai_message_job.sql"),
+    include_str!("../migrations/017_ai_message_ask.sql"),
 ];
 
 #[derive(Clone)]

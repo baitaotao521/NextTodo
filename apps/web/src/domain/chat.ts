@@ -1,5 +1,7 @@
 // A chat's answer read as it comes. See docs/ai.md#对话.
 
+import type { AiAsk } from "../api/types/AiAsk";
+
 /** One event of a chat's answer: what was written, or how it ended. */
 export type ChatEvent = {
   delta?: string;
@@ -9,6 +11,8 @@ export type ChatEvent = {
   message_id?: string;
   /** The tidying its changes wait on, when the turn had any. */
   job_id?: string | null;
+  /** The question it asks the user, with the choices it suggests, when it asks one. */
+  ask?: AiAsk | null;
 };
 
 /** The events of a chat's answer as it is read: a frame may be cut in two by the network. */

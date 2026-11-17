@@ -179,8 +179,9 @@ AI [对话](ai.md#对话)的消息，每个用户每个文件夹一段。
 | owner_id | TEXT → users | 说话的用户；共享文件夹里各成员各聊各的 |
 | folder_id | TEXT → folders，可空 | `NULL` 是根目录；删除文件夹时级联删除，撤销删除文件夹不恢复 |
 | role | TEXT | `user` 或 `assistant` |
-| content | TEXT | 消息原文；用户的最多 10000 字。助手的内容不含用来标记改动的 `[[CHANGES]]` |
+| content | TEXT | 消息原文；用户的最多 10000 字。助手的内容不含用来标记改动和提问的 `[[CHANGES]]`、`[[ASK]]` |
 | job_id | TEXT，可空 | 这条回复触发的整理请求（`ai_jobs.id`），待确认的修改显示在回复下面；应用或放弃后请求删除，消息留着，界面显示“修改已应用或已放弃” |
+| ask | TEXT，可空 | 这条回复的提问，JSON `{question, options, recommended}`；选项显示在回复下面，点了作为用户的话发出去。服务端把建议项放到第一个，`recommended` 记为 0 |
 | created_at | INTEGER | 毫秒；读取时从旧到新，最多 200 条，更早的删掉 |
 
 ### mutations

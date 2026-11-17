@@ -656,6 +656,33 @@ async fn a_chat_turn_that_changes_things_lists_them_below_the_reply() {
 }
 
 #[tokio::test]
+async fn a_chat_can_ask_with_choices_and_its_suggestion_first() {
+    let (t, fake) = server();
+    let s = t.admin().await;
+    t.ok(&s, "add", json!({ "title": "读第三章", "folder": "/读书" })).await;
+    let folder = t.snapshot(&s).await["folders"][0]["id"].as_str().unwrap().to_owned();
+    t.call("PUT", "/ai/settings", Some(&s), Some(config())).await;
+
+    fake.answer(Ok("我建议改到周六，这样下周不赶。\n\n[[ASK]]{\"question\":\"要改到哪一天？\",\"options\":[\"周五\",\"周六\",\"下周一\"],\"recommended\":1}"));
+    let said = json!({ "folder_id": folder, "text": "把这个挪一下", "local_time": "2026-11-04 16:30 星期三" });
+    let (status, _, body) = t.call_raw("POST", "/ai/chat", Some(&s), Some(said)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("[[ASK]]"), "{body}");
+    assert!(body.contains("\"ask\""), "{body}");
+
+    // The question is kept with the reply, the suggested choice first; no change is made until
+    // the user has chosen.
+    let chat = t.call("GET", &format!("/ai/chat?folder_id={folder}"), Some(&s), None).await.body;
+    let messages = chat.as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1]["content"], "我建议改到周六，这样下周不赶。");
+    assert_eq!(messages[1]["ask"]["question"], "要改到哪一天？");
+    assert_eq!(messages[1]["ask"]["options"][0], "周六");
+    assert_eq!(messages[1]["ask"]["recommended"], 0);
+    assert!(t.snapshot(&s).await["ai_jobs"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn a_chat_takes_the_settings_a_device_keeps() {
     let fake = Arc::new(Fake::default());
     let t = TestApp::with_ai(Ai::new(None, fake.clone()));

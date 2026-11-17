@@ -778,5 +778,13 @@ a.text-btn { display: inline-flex; align-items: center; }
 .chat-proposal .group { margin: 0; }
 .chat-proposal .actions { margin: 14px -4px 0; }
 .chat-proposal-gone { align-self: flex-start; margin: 0; color: var(--outline); font-size: 13px; }
+.chat-ask { align-self: flex-start; width: min(100%, 720px); max-width: 92%; padding: 12px 14px; border: 1px solid var(--outline-variant); border-radius: 16px; background: var(--surface-container); animation: dialog-in .18s ease-out; }
+.chat-ask-q { margin: 0 0 9px; font-size: 14px; line-height: 1.55; color: var(--on-surface); }
+.chat-ask-options { display: flex; flex-direction: column; gap: 7px; }
+.chat-ask-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 38px; padding: 8px 12px; border: 1px solid var(--outline-variant); border-radius: 12px; background: var(--surface); color: var(--on-surface); font: 400 14px/1.45 var(--font); text-align: left; }
+.chat-ask-option:active { background: var(--press); }
+.chat-ask-option:disabled { opacity: .55; }
+.chat-ask-option.recommended { background: var(--primary-container); color: var(--on-primary-container); border-color: transparent; }
+.chat-ask-badge { flex: none; padding: 2px 7px; border-radius: 8px; background: color-mix(in srgb, var(--on-primary-container), transparent 86%); font-size: 11px; font-weight: 600; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

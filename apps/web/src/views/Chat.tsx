@@ -4,6 +4,7 @@
 import { CircleAlert, LoaderCircle, Trash2 } from "lucide-react";
 import { Fragment, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, apiStream } from "../api/http";
+import type { AiAsk } from "../api/types/AiAsk";
 import type { AiMessage } from "../api/types/AiMessage";
 import type { FolderId } from "../api/types/FolderId";
 import { localAiConfig } from "../ai";
@@ -82,7 +83,7 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
     setDraft("");
     setMessages((all) => [
       ...(all ?? []),
-      { id: `local-${Date.now()}`, role: "user", content: said, job_id: null, created_at: Date.now() },
+      { id: `local-${Date.now()}`, role: "user", content: said, job_id: null, ask: null, created_at: Date.now() },
     ]);
     const abort = new AbortController();
     stop.current = abort;
@@ -90,6 +91,7 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
     let answer = "";
     let messageId: string | undefined;
     let jobId: string | null = null;
+    let ask: AiAsk | null = null;
     try {
       const res = await apiStream(
         ENDPOINT(folder),
@@ -127,6 +129,7 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
           } else if (event.done) {
             messageId = event.message_id;
             jobId = event.job_id ?? null;
+            ask = event.ask ?? null;
           }
         }
       };
@@ -141,7 +144,7 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
       const name = typeof e === "object" && e !== null ? (e as { name?: string }).name : undefined;
       if (name !== "AbortError") setError(forUser("发送消息", e));
     } finally {
-      if (answer || jobId) {
+      if (answer || jobId || ask) {
         setMessages((all) => [
           ...(all ?? []),
           {
@@ -149,6 +152,7 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
             role: "assistant",
             content: answer,
             job_id: jobId,
+            ask,
             created_at: Date.now(),
           },
         ]);
@@ -228,7 +232,7 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
                 AI 能看到这个文件夹里未完成的事项和你的说明。让它新建、修改、完成、删除或移动事项都可以；它会说明打算怎么改，并在回复下面列出待确认的修改，由你确认后应用。
               </p>
             )}
-            {messages.map((m) => (
+            {messages.map((m, i) => (
               <Fragment key={m.id}>
                 {m.content && (
                   <div className={`chat-msg ${m.role}`}>
@@ -242,6 +246,9 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
                   </div>
                 )}
                 {m.role === "assistant" && m.job_id && <Proposal id={m.job_id} board={board} />}
+                {m.role === "assistant" && m.ask && i === messages.length - 1 && (
+                  <AskOptions ask={m.ask} busy={busy} onPick={(option) => void say(option)} />
+                )}
               </Fragment>
             ))}
             {answering && (
@@ -266,5 +273,28 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
         )}
       </div>
     </Modal>
+  );
+}
+
+/** The question a reply asks, with its suggested choices: picking one says it back. */
+function AskOptions({ ask, busy, onPick }: { ask: AiAsk; busy: boolean; onPick(option: string): void }) {
+  return (
+    <section className="chat-ask" aria-label="AI 想确认">
+      <p className="chat-ask-q">{ask.question}</p>
+      <div className="chat-ask-options">
+        {ask.options.map((option, i) => (
+          <button
+            key={`${i}-${option}`}
+            type="button"
+            className={`chat-ask-option${i === ask.recommended ? " recommended" : ""}`}
+            disabled={busy}
+            onClick={() => onPick(option)}
+          >
+            <span>{option}</span>
+            {i === ask.recommended && <span className="chat-ask-badge">建议</span>}
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }

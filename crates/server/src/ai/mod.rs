@@ -737,7 +737,9 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
                         let _ = tx.send(event(json!({ "delta": tail }))).await;
                     }
                     let text = hidden.shown().to_owned();
-                    let changes = hidden.changes();
+                    let ask = hidden.ask();
+                    let changes = hidden.changes() && ask.is_none();
+                    let row_ask = ask.clone();
                     let now = st.clock.now();
                     let done = st
                         .db
@@ -757,11 +759,11 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
                                 let actor = actor(&owner);
                                 let ran = mutate::run(c, &actor, std::slice::from_ref(&op), now)?;
                                 let recorded = mutate::record(c, &actor, MutationId(Uuid::now_v7()), &[op], &ran, now)?;
-                                chat::attach_job(c, &message.id, id)?;
                                 Some((id, recorded.to))
                             } else {
                                 None
                             };
+                            chat::attach(c, &message.id, job.as_ref().map(|(id, _)| *id), row_ask.as_ref())?;
                             Ok((message, job))
                         })
                         .await;
@@ -771,6 +773,9 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
                                 st.hub.notify(to);
                             }
                             let mut answer = json!({ "done": true, "message_id": message.id });
+                            if let Some(ask) = &ask {
+                                answer["ask"] = json!(ask);
+                            }
                             if let Some((id, _)) = job {
                                 answer["job_id"] = json!(id);
                             }
