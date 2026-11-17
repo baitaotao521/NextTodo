@@ -32,6 +32,9 @@ export function useSelection(): { selected: TaskId | null; select(id: TaskId): v
 
 export const folderUrl = (id: string | null) => (id ? `/folders/${id}` : "/folders");
 
+/** The AI chat about a folder (`null` for the root), a full page of its own. */
+export const chatUrl = (folder: string | null) => (folder ? `/chat/${folder}` : "/chat");
+
 export type FolderView = "list" | "graph";
 
 const VIEW_KEY = "nexttodo.folderView";

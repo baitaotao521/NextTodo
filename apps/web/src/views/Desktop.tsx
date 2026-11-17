@@ -13,6 +13,7 @@ import { Fold } from "../ui/fold";
 import { useNow } from "../ui/hooks";
 import { Icon } from "../ui/icons";
 import { BatchTools, batchTitle, useBatch } from "./batch";
+import { AiChat } from "./Chat";
 import { Detail } from "./Detail";
 import { useTreeDrag } from "./drag";
 import { FolderContextMenu, FolderMenu, usePlaceFolder } from "./FolderMenu";
@@ -45,8 +46,11 @@ export function Desktop({ onSignOut }: { onSignOut(): void }) {
   if (params.has("add") && query) setQuery("");
   const [view] = useFolderView();
   const folder = location.match(/^\/folders\/([^/]+)$/)?.[1] ?? null;
+  // The AI chat page: `/chat` for the root, `/chat/<id>` for a folder; `undefined` when not on it.
+  const chatFolder = location === "/chat" ? null : (location.match(/^\/chat\/([^/]+)$/)?.[1] ?? undefined);
   const section = useSectionAt(location);
-  const at = location === "/done" ? "done" : location.startsWith("/folders") ? (folder ?? "root") : location.startsWith("/settings") ? "settings" : "next";
+  const at =
+    location === "/done" ? "done" : chatFolder !== undefined ? "chat" : location.startsWith("/folders") ? (folder ?? "root") : location.startsWith("/settings") ? "settings" : "next";
 
   let main: ReactNode;
   if (query.trim()) {
@@ -101,6 +105,26 @@ export function Desktop({ onSignOut }: { onSignOut(): void }) {
         <DoneBody now={now} />
       </Page>
     );
+  } else if (at === "chat") {
+    const cf = chatFolder ?? null;
+    if (cf && !board.folder(cf)) {
+      main = <Redirect to="/folders" replace />;
+    } else {
+      main = (
+        <Page
+          title="AI 对话"
+          crumbs={
+            <Link className="crumb-back" to={folderUrl(cf)}>
+              <Icon of={ChevronLeft} size={16} />
+              {cf ? board.folderName(cf) : "文件夹"}
+            </Link>
+          }
+          scroll={false}
+        >
+          <AiChat folder={cf} />
+        </Page>
+      );
+    }
   } else if (at !== "root" && !board.folder(at)) {
     main = <Redirect to="/folders" replace />;
   } else {
@@ -136,7 +160,7 @@ export function Desktop({ onSignOut }: { onSignOut(): void }) {
       className={`desk-cols${sideOpen ? "" : " side-closed"}${open ? "" : " pane-closed"}`}
       onTransitionEnd={(e) => e.target === e.currentTarget && !open && setShown(null)}
     >
-      <Sidebar at={query.trim() ? null : at} query={query} setQuery={search} />
+      <Sidebar at={query.trim() ? null : chatFolder !== undefined ? (chatFolder ?? "root") : at} query={query} setQuery={search} />
       <main className={`main${batch.on ? " choosing" : ""}`}>
         <div className="main-tools" data-tauri-drag-region="deep">
           <Tip label={label}>

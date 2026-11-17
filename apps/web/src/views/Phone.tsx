@@ -14,6 +14,7 @@ import { Sheet } from "../ui/Sheet";
 import { app } from "../api/http";
 import { BackgroundTip } from "./Background";
 import { BatchBar, BatchHead, useBatch } from "./batch";
+import { AiChat } from "./Chat";
 import { Detail } from "./Detail";
 import { FolderMenu } from "./FolderMenu";
 import { SharedWith, sharer } from "./share";
@@ -30,13 +31,25 @@ export function Phone({ onSignOut }: { onSignOut(): void }) {
   const batch = useBatch();
   const now = useNow();
   const folder = location.match(/^\/folders\/([^/]+)$/)?.[1] ?? null;
+  // The AI chat page: `/chat` for the root, `/chat/<id>` for a folder; `undefined` when not on it.
+  const chatFolder = location === "/chat" ? null : (location.match(/^\/chat\/([^/]+)$/)?.[1] ?? undefined);
   const section = useSectionAt(location);
-  const tab = location.startsWith("/folders") ? "folders" : location.startsWith("/settings") ? "settings" : "next";
+  const tab = location.startsWith("/folders") || chatFolder !== undefined ? "folders" : location.startsWith("/settings") ? "settings" : "next";
 
-  // Going deeper in a tab (into a folder, to what is done, to a section of the settings) slides the
-  // new page in from the right; going back, the other way.
+  // Going deeper in a tab (into a folder, to what is done, to a section of the settings, to the chat)
+  // slides the new page in from the right; going back, the other way.
   const depth =
-    tab === "next" ? Number(location === "/done") : tab === "settings" ? Number(!!section) : folder && board.folder(folder) ? board.depth(folder) : 0;
+    tab === "next"
+      ? Number(location === "/done")
+      : tab === "settings"
+        ? Number(!!section)
+        : chatFolder !== undefined
+          ? chatFolder && board.folder(chatFolder)
+            ? board.depth(chatFolder) + 1
+            : 1
+          : folder && board.folder(folder)
+            ? board.depth(folder)
+            : 0;
   const [page, setPage] = useState({ tab, depth, anim: "" });
   if (page.tab !== tab || page.depth !== depth) {
     const anim = tab === page.tab ? (depth > page.depth ? " anim-push" : " anim-pop") : "";
@@ -49,6 +62,8 @@ export function Phone({ onSignOut }: { onSignOut(): void }) {
   else if (tab === "settings") {
     screen = section === undefined ? <Redirect to={settingsUrl()} replace /> : <SettingsScreen key={section ?? "home"} section={section} anim={anim} onSignOut={onSignOut} />;
   } else if (tab === "next") screen = <NextScreen key="next" anim={anim} now={now} />;
+  else if (chatFolder !== undefined)
+    screen = chatFolder && !board.folder(chatFolder) ? <Redirect to="/folders" replace /> : <ChatScreen key={chatFolder ?? "root"} anim={anim} folder={chatFolder} />;
   else if (folder && !board.folder(folder)) screen = <Redirect to="/folders" replace />;
   else screen = <FolderScreen key={folder ?? "root"} anim={anim} folder={folder} now={now} />;
 
@@ -180,6 +195,17 @@ function DoneScreen({ anim, now }: { anim: string; now: Date }) {
         )}
       </div>
       <DoneBody now={now} />
+    </Screen>
+  );
+}
+
+/** The AI chat about `folder` (`null` for the root), a page of its own. */
+function ChatScreen({ folder, anim }: { folder: FolderId | null; anim: string }) {
+  const { board } = useView();
+  const label = folder ? board.folderName(folder) : "文件夹";
+  return (
+    <Screen title="AI 对话" nav={<Back to={folderUrl(folder)} label={label} />} anim={anim} fill>
+      <AiChat folder={folder} />
     </Screen>
   );
 }

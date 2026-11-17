@@ -1,6 +1,6 @@
 // A conversation with the model about a folder's tasks, answered as it is written, and kept on the
-// server so that another device carries it on. A folder has many of them, listed on the left. See
-// docs/ai.md#对话.
+// server so that another device carries it on. A folder has many of them, listed on the left; it is a
+// full page, opened from the folder's menu. See docs/ai.md#对话.
 
 import { CircleAlert, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { Fragment, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -14,16 +14,22 @@ import { localAiConfig } from "../ai";
 import { ChatEvents } from "../domain/chat";
 import { ago, localTime } from "../domain/dates";
 import { useSession, useView } from "../session";
-import { Modal, forUser, useFeedback } from "../ui/feedback";
+import { forUser, useFeedback } from "../ui/feedback";
 import { composing } from "../ui/keys";
 import { Description as Markdown } from "../ui/lazy-markdown";
 import { Proposal } from "./suggestions";
 
 const endpoint = (chat: AiChatId) => `/ai/chat?chat_id=${chat}`;
 
+/** The text a quick-add hands over to start a conversation; read and cleared by the chat page. */
+let handed: string | undefined;
+export function handChat(text: string) {
+  handed = text;
+}
+
 /** The conversations about `folder`: a new one to write in, and the directory of the others on the
  * left, newest first. See docs/ai.md#对话. */
-export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; initial?: string; onClose(): void }) {
+export function AiChat({ folder }: { folder: FolderId | null }) {
   const { user } = useSession();
   const { board } = useView();
   const { snack, confirm } = useFeedback();
@@ -31,6 +37,8 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
   const [chatId, setChatId] = useState<AiChatId | null>(null);
   const [messages, setMessages] = useState<AiMessage[] | null>(null);
   const [draft, setDraft] = useState("");
+  /** The text the quick-add handed over, said once the conversation it starts is here. */
+  const [seed] = useState<string | undefined>(() => handed);
   /** The answer being written; in `messages` once it is done. */
   const [answering, setAnswering] = useState("");
   const [busy, setBusy] = useState(false);
@@ -81,7 +89,17 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
       here = false;
       stop.current?.abort();
     };
-  }, [folder, initial]);
+  }, [folder]);
+
+  // The text handed over is taken once; leaving the page and coming back starts a plain new chat.
+  useEffect(() => {
+    handed = undefined;
+  }, []);
+
+  // The box to write in takes the focus as the page opens.
+  useEffect(() => {
+    area.current?.focus();
+  }, []);
 
   // At the newest, and again as an answer is written.
   useEffect(() => {
@@ -98,11 +116,11 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
 
   // Said once the conversation it joins is here, so that the history goes with it.
   useEffect(() => {
-    if (started.current || !initial || messages === null) return;
+    if (started.current || !seed || messages === null) return;
     started.current = true;
-    void say(initial);
+    void say(seed);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- said once, when that is here
-  }, [initial, messages]);
+  }, [seed, messages]);
 
   async function say(text: string) {
     const said = text.trim();
@@ -256,12 +274,87 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
   const now = new Date();
   const place = folder && board.folder(folder) ? board.place(folder) : board.folderName(null);
   return (
-    <Modal
-      title="AI 对话"
-      wide
-      focus={area}
-      onClose={onClose}
-      footer={
+    <div className="chat-shell">
+      <aside className="chat-sessions">
+        <button type="button" className="tonal-btn chat-new" onClick={newChat} disabled={busy}>
+          <Plus size={15} /> 新对话
+        </button>
+        <div className="chat-session-list">
+          {chats === null ? (
+            <p className="chat-session-empty">
+              <LoaderCircle className="spin" size={14} /> 读取中…
+            </p>
+          ) : chats.length === 0 ? (
+            <p className="chat-session-empty">还没有对话</p>
+          ) : (
+            chats.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className={`chat-session${c.id === chatId ? " on" : ""}`}
+                disabled={busy}
+                onClick={() => selectChat(c.id)}
+              >
+                <span className="chat-session-title">{c.title || "新对话"}</span>
+                <span className="chat-session-time">{ago(c.updated_at, now)}</span>
+              </button>
+            ))
+          )}
+        </div>
+      </aside>
+      <div className="chat-main">
+        <div className="chat-log">
+          {messages === null ? (
+            <p className="empty">
+              <LoaderCircle className="spin" size={16} /> 正在读取对话…
+            </p>
+          ) : (
+            <>
+              {!messages.length && !answering && (
+                <p className="chat-hint">
+                  这是段新对话：左边目录是之前的对话，点一条接着聊。AI 能看到这个文件夹里未完成的事项和你的说明，让它新建、修改、完成、删除或移动事项都可以；它会说明打算怎么改，并在回复下面列出待确认的修改，由你确认后应用。
+                </p>
+              )}
+              {messages.map((m, i) => (
+                <Fragment key={m.id}>
+                  {m.content && (
+                    <div className={`chat-msg ${m.role}`}>
+                      {m.role === "assistant" ? (
+                        <Suspense fallback={<p className="chat-text">{m.content}</p>}>
+                          <Markdown source={m.content} onChange={() => {}} />
+                        </Suspense>
+                      ) : (
+                        <p className="chat-text">{m.content}</p>
+                      )}
+                    </div>
+                  )}
+                  {m.role === "assistant" && m.job_id && <Proposal id={m.job_id} board={board} />}
+                  {m.role === "assistant" && m.ask && i === messages.length - 1 && (
+                    <AskOptions ask={m.ask} busy={busy} onPick={(option) => void say(option)} />
+                  )}
+                </Fragment>
+              ))}
+              {answering && (
+                <div className="chat-msg assistant writing">
+                  <Suspense fallback={<p className="chat-text">{answering}</p>}>
+                    <Markdown source={answering} onChange={() => {}} />
+                  </Suspense>
+                </div>
+              )}
+              {busy && !answering && (
+                <p className="chat-hint">
+                  <LoaderCircle className="spin" size={15} /> 正在想…
+                </p>
+              )}
+              {error && (
+                <p className="chat-error" role="alert">
+                  <CircleAlert size={15} /> {error}
+                </p>
+              )}
+              <div ref={end} />
+            </>
+          )}
+        </div>
         <div className="chat-foot">
           <div className="chat-tools">
             <span className="chat-place">{place}</span>
@@ -290,92 +383,8 @@ export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; 
             </button>
           </form>
         </div>
-      }
-    >
-      <div className="chat-shell">
-        <aside className="chat-sessions">
-          <button type="button" className="tonal-btn chat-new" onClick={newChat} disabled={busy}>
-            <Plus size={15} /> 新对话
-          </button>
-          <div className="chat-session-list">
-            {chats === null ? (
-              <p className="chat-session-empty">
-                <LoaderCircle className="spin" size={14} /> 读取中…
-              </p>
-            ) : chats.length === 0 ? (
-              <p className="chat-session-empty">还没有对话</p>
-            ) : (
-              chats.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  className={`chat-session${c.id === chatId ? " on" : ""}`}
-                  disabled={busy}
-                  onClick={() => selectChat(c.id)}
-                >
-                  <span className="chat-session-title">{c.title || "新对话"}</span>
-                  <span className="chat-session-time">{ago(c.updated_at, now)}</span>
-                </button>
-              ))
-            )}
-          </div>
-        </aside>
-        <div className="chat-main">
-          <div className="chat-log">
-            {messages === null ? (
-              <p className="empty">
-                <LoaderCircle className="spin" size={16} /> 正在读取对话…
-              </p>
-            ) : (
-              <>
-                {!messages.length && !answering && (
-                  <p className="chat-hint">
-                    这是段新对话：左边目录是之前的对话，点一条接着聊。AI 能看到这个文件夹里未完成的事项和你的说明，让它新建、修改、完成、删除或移动事项都可以；它会说明打算怎么改，并在回复下面列出待确认的修改，由你确认后应用。
-                  </p>
-                )}
-                {messages.map((m, i) => (
-                  <Fragment key={m.id}>
-                    {m.content && (
-                      <div className={`chat-msg ${m.role}`}>
-                        {m.role === "assistant" ? (
-                          <Suspense fallback={<p className="chat-text">{m.content}</p>}>
-                            <Markdown source={m.content} onChange={() => {}} />
-                          </Suspense>
-                        ) : (
-                          <p className="chat-text">{m.content}</p>
-                        )}
-                      </div>
-                    )}
-                    {m.role === "assistant" && m.job_id && <Proposal id={m.job_id} board={board} />}
-                    {m.role === "assistant" && m.ask && i === messages.length - 1 && (
-                      <AskOptions ask={m.ask} busy={busy} onPick={(option) => void say(option)} />
-                    )}
-                  </Fragment>
-                ))}
-                {answering && (
-                  <div className="chat-msg assistant writing">
-                    <Suspense fallback={<p className="chat-text">{answering}</p>}>
-                      <Markdown source={answering} onChange={() => {}} />
-                    </Suspense>
-                  </div>
-                )}
-                {busy && !answering && (
-                  <p className="chat-hint">
-                    <LoaderCircle className="spin" size={15} /> 正在想…
-                  </p>
-                )}
-                {error && (
-                  <p className="chat-error" role="alert">
-                    <CircleAlert size={15} /> {error}
-                  </p>
-                )}
-                <div ref={end} />
-              </>
-            )}
-          </div>
-        </div>
       </div>
-    </Modal>
+    </div>
   );
 }
 

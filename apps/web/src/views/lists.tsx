@@ -29,11 +29,11 @@ import { useLeave } from "../ui/leave";
 import { useWide } from "../ui/hooks";
 import { useTaskActions } from "./actions";
 import { useListed } from "./batch";
-import { AiChat } from "./Chat";
+import { handChat } from "./Chat";
 import { useRowDrag } from "./drag";
 import { useNewFolder, usePlaceFolder } from "./FolderMenu";
 import { useMarks } from "./marks";
-import { folderUrl, settingsUrl, useFolderView, useSelection } from "./nav";
+import { chatUrl, folderUrl, settingsUrl, useFolderView, useSelection } from "./nav";
 import { JobRows } from "./jobs";
 import { useKeepDone } from "./keep-done";
 import { FolderPicker } from "./pickers";
@@ -288,8 +288,6 @@ export function QuickAdd({ folder }: { folder?: FolderId | null }) {
   const [picking, setPicking] = useState(false);
   const [tall, setTall] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  /** What the chat below the bar starts with, once the text is handed over; `null` for no chat. */
-  const [chat, setChat] = useState<string | null>(null);
   const into = folder !== undefined ? folder : target && board.folder(target) ? target : null;
   const area = useRef<HTMLTextAreaElement>(null);
   const focus = () => area.current?.focus();
@@ -342,7 +340,8 @@ export function QuickAdd({ folder }: { folder?: FolderId | null }) {
       snack(c.error);
       return false;
     }
-    setChat(c.value);
+    handChat(c.value);
+    navigate(chatUrl(into));
     edit("");
     return true;
   };
@@ -430,7 +429,6 @@ export function QuickAdd({ folder }: { folder?: FolderId | null }) {
           {send}
         </Editor>
       )}
-      {chat !== null && <AiChat folder={into} initial={chat} onClose={() => setChat(null)} />}
       {picking && <FolderPicker mode="add" current={into} onPick={setTarget} onClose={() => setPicking(false)} />}
     </>
   );

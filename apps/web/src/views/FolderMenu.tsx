@@ -19,8 +19,7 @@ import { Icon } from "../ui/icons";
 import { ContextMenu, type MenuItem, itemClass } from "../ui/menu";
 import { useAiNote } from "./AiNotes";
 import { useBatch } from "./batch";
-import { AiChat } from "./Chat";
-import { folderUrl } from "./nav";
+import { chatUrl, folderUrl } from "./nav";
 import { FolderPicker } from "./pickers";
 import { SharePanel, lost, shareable, sharer } from "./share";
 
@@ -65,16 +64,8 @@ export function usePlaceFolder() {
   };
 }
 
-/** Opens the folder's AI conversations: a directory on the left and a new conversation to write in
- * (docs/ai.md#对话); `panel` is the window. Reading the directory needs no model; only sending does. */
-function useAiChat(folder: FolderId | null): { start(): void; panel: ReactNode } {
-  const [open, setOpen] = useState(false);
-  const start = () => setOpen(true);
-  return { start, panel: open && <AiChat folder={folder} onClose={() => setOpen(false)} /> };
-}
-
-/** The actions on `folder`, and the panel that moving, tidying or sharing it opens; in the root, only
- * making a folder and tidying; in a folder someone shares with the user, not changing that folder
+/** The actions on `folder`, and the panel that moving, sharing or its notes open; in the root, only
+ * making a folder and the AI's; in a folder someone shares with the user, not changing that folder
  * itself, which is its owner's to do; none for a folder deleted meanwhile, say on another device. */
 function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: ReactNode } {
   const commit = useCommit();
@@ -82,7 +73,6 @@ function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: 
   const { prompt, confirm, snack } = useFeedback();
   const newFolder = useNewFolder();
   const place = usePlaceFolder();
-  const ai = useAiChat(folder);
   const note = useAiNote(folder);
   const [location, navigate] = useLocation();
   const [moving, setMoving] = useState(false);
@@ -91,18 +81,10 @@ function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: 
   if (folder === null) {
     const items = [
       { icon: FolderPlus, label: "新建文件夹", onSelect: () => newFolder(null) },
-      { icon: MessageSquare, label: "AI 对话", onSelect: ai.start },
+      { icon: MessageSquare, label: "AI 对话", onSelect: () => navigate(chatUrl(null)) },
       { icon: NotebookPen, label: "AI 说明", onSelect: note.start },
     ];
-    return {
-      items,
-      panel: (
-        <>
-          {ai.panel}
-          {note.panel}
-        </>
-      ),
-    };
+    return { items, panel: note.panel };
   }
   const f = board.folder(folder);
   if (!f) return { items: [], panel: null };
@@ -127,7 +109,7 @@ function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: 
   return {
     items: [
       { icon: FolderPlus, label: "新建子文件夹", onSelect: () => newFolder(f.id) },
-      { icon: MessageSquare, label: "AI 对话", onSelect: ai.start },
+      { icon: MessageSquare, label: "AI 对话", onSelect: () => navigate(chatUrl(f.id)) },
       { icon: NotebookPen, label: "AI 说明", onSelect: note.start },
       ...(shareable(board, f.id) && !inLocalMode() ? [{ icon: Users, label: "共享…", onSelect: () => setSharing(true) }] : []),
       ...(theirs
@@ -140,7 +122,6 @@ function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: 
     ],
     panel: (
       <>
-        {ai.panel}
         {note.panel}
         {moving && <FolderPicker mode="move" current={f.parent_id} exclude={f.id} onPick={(parent) => place(f.id, parent, null)} onClose={() => setMoving(false)} />}
         {sharing && <SharePanel folder={f.id} onClose={() => setSharing(false)} />}
