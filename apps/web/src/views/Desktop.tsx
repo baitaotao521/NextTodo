@@ -1,7 +1,7 @@
 // The desktop layout: folders on the left, which can be folded away, the list in the middle, and the
 // open task's details on the right.
 
-import { ChevronLeft, ChevronRight, CircleCheck, FolderRoot, History, ListChecks, PanelLeft, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleCheck, FolderRoot, History, ListChecks, MessageSquare, PanelLeft, Search } from "lucide-react";
 import { Fragment, type ReactNode, useRef, useState } from "react";
 import { Link, Redirect, useLocation, useSearchParams } from "wouter";
 import type { FolderId } from "../api/types/FolderId";
@@ -50,7 +50,7 @@ export function Desktop({ onSignOut }: { onSignOut(): void }) {
   const chatFolder = location === "/chat" ? null : (location.match(/^\/chat\/([^/]+)$/)?.[1] ?? undefined);
   const section = useSectionAt(location);
   const at =
-    location === "/done" ? "done" : chatFolder !== undefined ? "chat" : location.startsWith("/folders") ? (folder ?? "root") : location.startsWith("/settings") ? "settings" : "next";
+    location === "/done" ? "done" : chatFolder !== undefined ? "ai" : location.startsWith("/folders") ? (folder ?? "root") : location.startsWith("/settings") ? "settings" : "next";
 
   let main: ReactNode;
   if (query.trim()) {
@@ -105,22 +105,13 @@ export function Desktop({ onSignOut }: { onSignOut(): void }) {
         <DoneBody now={now} />
       </Page>
     );
-  } else if (at === "chat") {
+  } else if (at === "ai") {
     const cf = chatFolder ?? null;
     if (cf && !board.folder(cf)) {
-      main = <Redirect to="/folders" replace />;
+      main = <Redirect to="/chat" replace />;
     } else {
       main = (
-        <Page
-          title="AI 对话"
-          crumbs={
-            <Link className="crumb-back" to={folderUrl(cf)}>
-              <Icon of={ChevronLeft} size={16} />
-              {cf ? board.folderName(cf) : "文件夹"}
-            </Link>
-          }
-          scroll={false}
-        >
+        <Page title="AI 对话" scroll={false}>
           <AiChat folder={cf} />
         </Page>
       );
@@ -160,7 +151,7 @@ export function Desktop({ onSignOut }: { onSignOut(): void }) {
       className={`desk-cols${sideOpen ? "" : " side-closed"}${open ? "" : " pane-closed"}`}
       onTransitionEnd={(e) => e.target === e.currentTarget && !open && setShown(null)}
     >
-      <Sidebar at={query.trim() ? null : chatFolder !== undefined ? (chatFolder ?? "root") : at} query={query} setQuery={search} />
+      <Sidebar at={query.trim() ? null : at} query={query} setQuery={search} />
       <main className={`main${batch.on ? " choosing" : ""}`}>
         <div className="main-tools" data-tauri-drag-region="deep">
           <Tip label={label}>
@@ -197,7 +188,7 @@ function Page(p: { title: string; crumbs?: ReactNode; actions?: ReactNode; add?:
   );
 }
 
-function Sidebar({ at, query, setQuery }: { at: FolderId | "next" | "done" | "root" | "settings" | null; query: string; setQuery(q: string): void }) {
+function Sidebar({ at, query, setQuery }: { at: FolderId | "next" | "done" | "root" | "settings" | "ai" | null; query: string; setQuery(q: string): void }) {
   const { board, pending } = useView();
   const { user } = useSession();
   const connection = useConnection();
@@ -290,6 +281,11 @@ function Sidebar({ at, query, setQuery }: { at: FolderId | "next" | "done" | "ro
             <span className="tw" />
             <Icon of={History} size={18} />
             <span>已完成</span>
+          </button>
+          <button className={`sb-item${at === "ai" ? " on" : ""}`} onClick={() => go("/chat")}>
+            <span className="tw" />
+            <Icon of={MessageSquare} size={18} />
+            <span>AI 对话</span>
           </button>
           <div className="sb-label">文件夹</div>
           {tree(null, null, 0)}

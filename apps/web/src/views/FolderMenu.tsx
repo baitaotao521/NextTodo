@@ -2,7 +2,7 @@
 // its "…" button, or by right-clicking it on a computer.
 
 import { DropdownMenu } from "radix-ui";
-import { Ellipsis, FolderInput, FolderPlus, ListChecks, MessageSquare, NotebookPen, Pencil, Trash2, Users } from "lucide-react";
+import { Ellipsis, FolderInput, FolderPlus, ListChecks, NotebookPen, Pencil, Trash2, Users } from "lucide-react";
 import { type ReactElement, type ReactNode, useContext, useRef, useState } from "react";
 import { v7 as uuidv7 } from "uuid";
 import { useLocation } from "wouter";
@@ -19,7 +19,7 @@ import { Icon } from "../ui/icons";
 import { ContextMenu, type MenuItem, itemClass } from "../ui/menu";
 import { useAiNote } from "./AiNotes";
 import { useBatch } from "./batch";
-import { chatUrl, folderUrl } from "./nav";
+import { folderUrl } from "./nav";
 import { FolderPicker } from "./pickers";
 import { SharePanel, lost, shareable, sharer } from "./share";
 
@@ -65,7 +65,7 @@ export function usePlaceFolder() {
 }
 
 /** The actions on `folder`, and the panel that moving, sharing or its notes open; in the root, only
- * making a folder and the AI's; in a folder someone shares with the user, not changing that folder
+ * making a folder and its notes; in a folder someone shares with the user, not changing that folder
  * itself, which is its owner's to do; none for a folder deleted meanwhile, say on another device. */
 function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: ReactNode } {
   const commit = useCommit();
@@ -81,7 +81,6 @@ function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: 
   if (folder === null) {
     const items = [
       { icon: FolderPlus, label: "新建文件夹", onSelect: () => newFolder(null) },
-      { icon: MessageSquare, label: "AI 对话", onSelect: () => navigate(chatUrl(null)) },
       { icon: NotebookPen, label: "AI 说明", onSelect: note.start },
     ];
     return { items, panel: note.panel };
@@ -109,7 +108,6 @@ function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: 
   return {
     items: [
       { icon: FolderPlus, label: "新建子文件夹", onSelect: () => newFolder(f.id) },
-      { icon: MessageSquare, label: "AI 对话", onSelect: () => navigate(chatUrl(f.id)) },
       { icon: NotebookPen, label: "AI 说明", onSelect: note.start },
       ...(shareable(board, f.id) && !inLocalMode() ? [{ icon: Users, label: "共享…", onSelect: () => setSharing(true) }] : []),
       ...(theirs

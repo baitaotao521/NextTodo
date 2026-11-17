@@ -1,6 +1,6 @@
 // The phone layout: one page at a time with a tab bar, details in a bottom sheet.
 
-import { ChevronLeft, CircleCheck, Folder as FolderIcon, History, ListChecks, Search } from "lucide-react";
+import { ChevronLeft, CircleCheck, Folder as FolderIcon, History, ListChecks, MessageSquare, Search } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Redirect, useLocation } from "wouter";
 import type { FolderId } from "../api/types/FolderId";
@@ -34,22 +34,12 @@ export function Phone({ onSignOut }: { onSignOut(): void }) {
   // The AI chat page: `/chat` for the root, `/chat/<id>` for a folder; `undefined` when not on it.
   const chatFolder = location === "/chat" ? null : (location.match(/^\/chat\/([^/]+)$/)?.[1] ?? undefined);
   const section = useSectionAt(location);
-  const tab = location.startsWith("/folders") || chatFolder !== undefined ? "folders" : location.startsWith("/settings") ? "settings" : "next";
+  const tab = chatFolder !== undefined ? "ai" : location.startsWith("/folders") ? "folders" : location.startsWith("/settings") ? "settings" : "next";
 
-  // Going deeper in a tab (into a folder, to what is done, to a section of the settings, to the chat)
-  // slides the new page in from the right; going back, the other way.
+  // Going deeper in a tab (into a folder, to what is done, to a section of the settings) slides the
+  // new page in from the right; going back, the other way. The chat is a tab of its own.
   const depth =
-    tab === "next"
-      ? Number(location === "/done")
-      : tab === "settings"
-        ? Number(!!section)
-        : chatFolder !== undefined
-          ? chatFolder && board.folder(chatFolder)
-            ? board.depth(chatFolder) + 1
-            : 1
-          : folder && board.folder(folder)
-            ? board.depth(folder)
-            : 0;
+    tab === "next" ? Number(location === "/done") : tab === "settings" ? Number(!!section) : tab === "folders" && folder && board.folder(folder) ? board.depth(folder) : 0;
   const [page, setPage] = useState({ tab, depth, anim: "" });
   if (page.tab !== tab || page.depth !== depth) {
     const anim = tab === page.tab ? (depth > page.depth ? " anim-push" : " anim-pop") : "";
@@ -61,9 +51,10 @@ export function Phone({ onSignOut }: { onSignOut(): void }) {
   if (location === "/done") screen = <DoneScreen key="done" anim={anim} now={now} />;
   else if (tab === "settings") {
     screen = section === undefined ? <Redirect to={settingsUrl()} replace /> : <SettingsScreen key={section ?? "home"} section={section} anim={anim} onSignOut={onSignOut} />;
+  } else if (tab === "ai") {
+    const cf = chatFolder ?? null;
+    screen = cf && !board.folder(cf) ? <Redirect to="/chat" replace /> : <ChatScreen key={cf ?? "root"} anim={anim} folder={cf} />;
   } else if (tab === "next") screen = <NextScreen key="next" anim={anim} now={now} />;
-  else if (chatFolder !== undefined)
-    screen = chatFolder && !board.folder(chatFolder) ? <Redirect to="/folders" replace /> : <ChatScreen key={chatFolder ?? "root"} anim={anim} folder={chatFolder} />;
   else if (folder && !board.folder(folder)) screen = <Redirect to="/folders" replace />;
   else screen = <FolderScreen key={folder ?? "root"} anim={anim} folder={folder} now={now} />;
 
@@ -84,6 +75,7 @@ export function Phone({ onSignOut }: { onSignOut(): void }) {
         <nav className="tabbar">
           {tabButton("next", "接下来", CircleCheck, "/")}
           {tabButton("folders", "文件夹", FolderIcon, "/folders")}
+          {tabButton("ai", "AI", MessageSquare, "/chat")}
           <button className={`tab${tab === "settings" ? " on" : ""}`} onClick={() => navigate(settingsUrl())}>
             <span className="tab-ic">
               <span className="avatar">{[...user.display_name][0]}</span>
@@ -199,12 +191,10 @@ function DoneScreen({ anim, now }: { anim: string; now: Date }) {
   );
 }
 
-/** The AI chat about `folder` (`null` for the root), a page of its own. */
+/** The AI chat about `folder` (`null` for the root), a tab of its own; the folder switches inside. */
 function ChatScreen({ folder, anim }: { folder: FolderId | null; anim: string }) {
-  const { board } = useView();
-  const label = folder ? board.folderName(folder) : "文件夹";
   return (
-    <Screen title="AI 对话" nav={<Back to={folderUrl(folder)} label={label} />} anim={anim} fill>
+    <Screen title="AI 对话" anim={anim} fill>
       <AiChat folder={folder} />
     </Screen>
   );

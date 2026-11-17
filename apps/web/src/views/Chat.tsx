@@ -1,9 +1,10 @@
 // A conversation with the model about a folder's tasks, answered as it is written, and kept on the
 // server so that another device carries it on. A folder has many of them, listed on the left; it is a
-// full page, opened from the folder's menu. See docs/ai.md#对话.
+// page of its own, reached from the main navigation, and the folder switches inside. See docs/ai.md#对话.
 
-import { CircleAlert, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, CircleAlert, Folder as FolderIcon, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { Fragment, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLocation } from "wouter";
 import { api, apiStream } from "../api/http";
 import type { AiAsk } from "../api/types/AiAsk";
 import type { AiChatId } from "../api/types/AiChatId";
@@ -15,8 +16,11 @@ import { ChatEvents } from "../domain/chat";
 import { ago, localTime } from "../domain/dates";
 import { useSession, useView } from "../session";
 import { forUser, useFeedback } from "../ui/feedback";
+import { Icon } from "../ui/icons";
 import { composing } from "../ui/keys";
 import { Description as Markdown } from "../ui/lazy-markdown";
+import { chatUrl } from "./nav";
+import { FolderPicker } from "./pickers";
 import { Proposal } from "./suggestions";
 
 const endpoint = (chat: AiChatId) => `/ai/chat?chat_id=${chat}`;
@@ -33,6 +37,9 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
   const { user } = useSession();
   const { board } = useView();
   const { snack, confirm } = useFeedback();
+  const [, navigate] = useLocation();
+  /** Whether the folder this chat is about is being switched. */
+  const [picking, setPicking] = useState(false);
   const [chats, setChats] = useState<AiChatSummary[] | null>(null);
   const [chatId, setChatId] = useState<AiChatId | null>(null);
   const [messages, setMessages] = useState<AiMessage[] | null>(null);
@@ -274,7 +281,8 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
   const now = new Date();
   const place = folder && board.folder(folder) ? board.place(folder) : board.folderName(null);
   return (
-    <div className="chat-shell">
+    <>
+      <div className="chat-shell">
       <aside className="chat-sessions">
         <button type="button" className="tonal-btn chat-new" onClick={newChat} disabled={busy}>
           <Plus size={15} /> 新对话
@@ -303,6 +311,16 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
         </div>
       </aside>
       <div className="chat-main">
+        <header className="chat-head">
+          <button type="button" className="chat-folder" onClick={() => setPicking(true)} disabled={busy}>
+            <Icon of={FolderIcon} size={16} />
+            <span className="truncate">{place}</span>
+            <Icon of={ChevronDown} size={15} />
+          </button>
+          <button type="button" className="text-btn" onClick={clear} disabled={!chatId || busy}>
+            <Trash2 size={14} /> 清空
+          </button>
+        </header>
         <div className="chat-log">
           {messages === null ? (
             <p className="empty">
@@ -356,12 +374,6 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
           )}
         </div>
         <div className="chat-foot">
-          <div className="chat-tools">
-            <span className="chat-place">{place}</span>
-            <button type="button" className="text-btn" onClick={clear} disabled={!chatId || busy}>
-              <Trash2 size={14} /> 清空
-            </button>
-          </div>
           <form className="chat-compose" onSubmit={send}>
             <textarea
               ref={area}
@@ -384,7 +396,9 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
           </form>
         </div>
       </div>
-    </div>
+      </div>
+      {picking && <FolderPicker mode="note" current={folder} onPick={(f) => navigate(chatUrl(f))} onClose={() => setPicking(false)} />}
+    </>
   );
 }
 
