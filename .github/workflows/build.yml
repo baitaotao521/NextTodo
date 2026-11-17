@@ -1,0 +1,83 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @nexttodo/web check
+      - run: pnpm --filter @nexttodo/web build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexttodo-web
+          path: apps/web/dist
+          retention-days: 7
+
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p nexttodo-server -p nexttodo-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexttodo-server
+          path: |
+            target/release/nexttodo-server
+            target/release/nexttodo
+          retention-days: 7
+
+  image:
+    needs: [web, server]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nexttodo-web
+          path: apps/web/dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: nexttodo-server
+          path: target/release
+      - name: Build the image
+        run: |
+          mkdir -p target/ci/web
+          cp -a apps/web/dist/. target/ci/web/
+          cp target/release/nexttodo-server target/ci/nexttodo-server
+          cp target/release/nexttodo target/ci/nexttodo
+          cat > target/ci/Dockerfile <<'EOF'
+          FROM ubuntu:24.04
+          COPY nexttodo-server /nexttodo-server
+          COPY nexttodo /usr/local/bin/nexttodo
+          COPY web /web
+          RUN chmod -R a+rX /nexttodo-server /web /usr/local/bin/nexttodo
+          ENV NEXTTODO_DATA=/data NEXTTODO_WEB=/web NEXTTODO_LISTEN=0.0.0.0:8080
+          USER 65534:65534
+          EXPOSE 8080
+          ENTRYPOINT ["/nexttodo-server"]
+          CMD ["serve"]
+          EOF
+          docker build -t nexttodo:ci target/ci
+          docker save nexttodo:ci | gzip > nexttodo-image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexttodo-image
+          path: nexttodo-image.tar.gz
+          retention-days: 7
