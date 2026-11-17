@@ -8,7 +8,6 @@ import { v7 as uuidv7 } from "uuid";
 import { useLocation } from "wouter";
 import type { FolderId } from "../api/types/FolderId";
 import type { Op } from "../api/types/Op";
-import { aiReady } from "../ai";
 import { lastKey } from "../domain/apply";
 import { inLocalMode } from "../local";
 import { rekey } from "../domain/reorder";
@@ -21,7 +20,7 @@ import { ContextMenu, type MenuItem, itemClass } from "../ui/menu";
 import { useAiNote } from "./AiNotes";
 import { useBatch } from "./batch";
 import { AiChat } from "./Chat";
-import { folderUrl, settingsUrl } from "./nav";
+import { folderUrl } from "./nav";
 import { FolderPicker } from "./pickers";
 import { SharePanel, lost, shareable, sharer } from "./share";
 
@@ -67,19 +66,10 @@ export function usePlaceFolder() {
 }
 
 /** Opens the folder's AI conversations: a directory on the left and a new conversation to write in
- * (docs/ai.md#对话); `panel` is the window. */
+ * (docs/ai.md#对话); `panel` is the window. Reading the directory needs no model; only sending does. */
 function useAiChat(folder: FolderId | null): { start(): void; panel: ReactNode } {
-  const { snack } = useFeedback();
-  const { user } = useSession();
-  const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
-  const start = async () => {
-    if (!(await aiReady(user.id))) {
-      snack("先选好 AI 整理用的模型");
-      return navigate(settingsUrl("ai"));
-    }
-    setOpen(true);
-  };
+  const start = () => setOpen(true);
   return { start, panel: open && <AiChat folder={folder} onClose={() => setOpen(false)} /> };
 }
 
