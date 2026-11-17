@@ -89,6 +89,44 @@ fn tidy_ask(ask: Ask) -> Option<Ask> {
     Some(Ask { question: question.to_owned(), options, recommended: 0 })
 }
 
+/// One conversation of the user's, for the page that manages them: where it is, how much was said,
+/// and the last word.
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export, rename = "AiChatSummary")]
+pub struct Summary {
+    pub folder_id: Option<FolderId>,
+    pub messages: usize,
+    pub last_role: Role,
+    pub last: String,
+    pub updated_at: i64,
+}
+
+/// The conversations the user has, newest first, a row for each folder and the root.
+pub fn summaries(c: &Connection, owner: &str) -> rusqlite::Result<Vec<Summary>> {
+    let mut stmt = c.prepare_cached(
+        "SELECT m1.folder_id, COUNT(*), MAX(m1.created_at),
+            (SELECT m2.role FROM ai_messages m2
+              WHERE m2.owner_id = m1.owner_id AND m2.folder_id IS m1.folder_id
+              ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1),
+            (SELECT substr(m2.content, 1, 160) FROM ai_messages m2
+              WHERE m2.owner_id = m1.owner_id AND m2.folder_id IS m1.folder_id
+              ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1)
+         FROM ai_messages m1 WHERE m1.owner_id = ?1
+         GROUP BY m1.folder_id ORDER BY MAX(m1.created_at) DESC",
+    )?;
+    let rows = stmt.query_map([owner], |r| {
+        let role = Role::parse(&r.get::<_, String>(3)?).ok_or(rusqlite::Error::InvalidQuery)?;
+        Ok(Summary {
+            folder_id: r.get(0)?,
+            messages: r.get::<_, i64>(1)? as usize,
+            last_role: role,
+            last: r.get(4)?,
+            updated_at: r.get(2)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// The conversation in `folder` (`None` for the root), oldest first.
 pub fn load(c: &Connection, owner: &str, folder: Option<FolderId>) -> rusqlite::Result<Vec<Message>> {
     let mut stmt = c.prepare_cached(

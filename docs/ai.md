@@ -20,6 +20,13 @@
 
 发给对话模型的内容：这一条消息、最近的对话（最多 20 条，累计最多 12000 字）、文件夹路径、从根目录到这个文件夹的[说明](#说明)、这个文件夹里未完成事项的编号、标题、截止时间和前置（最多 50 项，不含描述）。
 
+## 对话记录
+
+设置里的“AI 对话记录”页管理存在服务器上的对话，只列自己看得到的文件夹：
+
+- 按最后一条消息从新到旧列出，每段写文件夹路径、消息数、最后的时间和最后一句；搜索按路径或最后一句筛。
+- 点一段看全文：用户和 AI 分开，带时间；AI 的提问连同选项一起记下。“打开对话”打开这个文件夹的[对话](#对话)接着聊；“清空”删除这段对话和其中还没确认的修改，不能撤销。
+
 ## 添加
 
 - 添加框有两种模式：“直接添加”（现在的行为）和“AI 整理”，用框里的 ✦ 按钮切换，和字数无关。设备记住上次用的模式。还没配置模型时，点 ✦ 打开设置里的“AI 整理”。
@@ -224,8 +231,9 @@ cargo run -p nexttodo-server --example ai_eval -- fixtures/ai/organize.json --re
 | `POST /ai/jobs/{id}/run` | 仅本机：交出配置，开始整理这个等待中的请求；请求不在等待，或这个用户正有一条在整理时返回 409 |
 | `GET /ai/notes` | 自己的[说明](#说明)：`[{folder_id, text}]`，`folder_id` 为 `null` 的是全局说明；只列看得到的文件夹的 |
 | `PUT /ai/notes` | `{folder_id, text}`：设置一个文件夹（`null` 是根目录）的说明，`text` 为空时清除 |
+| `GET /ai/chats` | 自己的[对话记录](#对话记录)：`[{folder_id, messages, last_role, last, updated_at}]`，按最后一条消息从新到旧；只列看得到的文件夹，`folder_id` 为 `null` 的是根目录 |
 | `GET /ai/chat?folder_id=` | 这个文件夹（不带 `folder_id` 是根目录）的[对话](#对话)：`[{id, role, content, job_id, ask, created_at}]`，从旧到新，最多 200 条；`job_id` 是这条回复下面待确认的整理请求；`ask` 是这条回复下面的提问 `{question, options, recommended}`，可空，`recommended` 是建议项（服务端会把它放到第一个，值为 0） |
 | `POST /ai/chat` | 说一句，答案是 `text/event-stream`：每个事件 `data: {"delta": "…"}`，最后是 `{"done": true, "message_id": "…", "job_id": "…", "ask": {…}}`（这一轮有改动时才带 `job_id`，提问时才带 `ask`）或 `{"error": "…"}`。请求 `{folder_id?, text, local_time, config?}`，`config` 是模型配置存在本机时交上来的。模型用来标记改动和提问的 `[[CHANGES]]`、`[[ASK]]` 不会出现在 `delta` 和存下的内容里 |
-| `DELETE /ai/chat?folder_id=` | 清空这个文件夹的对话 |
+| `DELETE /ai/chat?folder_id=` | 清空这个文件夹的对话，和其中还没确认的修改 |
 
 `/snapshot` 增加 `ai_jobs`，变化增加 `ai_job` 一类。数据表见[数据模型](data-model.md#ai_jobs)。agent 用读工具 `jobs` 查看请求和状态，见 [agent 接入](agent.md#工具)。

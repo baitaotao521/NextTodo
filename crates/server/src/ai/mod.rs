@@ -623,6 +623,22 @@ fn seen(c: &Connection, owner: &str, folder: Option<FolderId>) -> Result<(), Api
     Ok(())
 }
 
+/// The user's conversations, for the page that manages them: one row per folder, newest first.
+pub async fn get_chats(State(st): State<AppState>, auth: Auth) -> Result<Json<Vec<chat::Summary>>, ApiError> {
+    auth.require_device()?;
+    let owner = auth.user_id;
+    st.db
+        .call(move |c| {
+            let visible = store::snapshot(c, &owner)?.folders;
+            Ok(chat::summaries(c, &owner)?
+                .into_iter()
+                .filter(|s| s.folder_id.is_none() || visible.iter().any(|f| f.id == s.folder_id.unwrap()))
+                .collect())
+        })
+        .await
+        .map(Json)
+}
+
 /// The conversation kept in `folder`, oldest first.
 pub async fn get_chat(State(st): State<AppState>, auth: Auth, Query(q): Query<ChatQuery>) -> Result<Json<Vec<chat::Message>>, ApiError> {
     auth.require_device()?;

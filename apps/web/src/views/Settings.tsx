@@ -1,6 +1,6 @@
 // The settings: a home page that lists the sections, each a page of its own (docs/ui.md#设置).
 
-import { Bell, ChevronRight, Copy, HardDrive, Info, KeyRound, type LucideIcon, Mail, Monitor, Palette, Plus, Sparkles, SquareTerminal } from "lucide-react";
+import { Bell, ChevronRight, Copy, HardDrive, Info, KeyRound, type LucideIcon, Mail, MessageSquare, Monitor, Palette, Plus, Sparkles, SquareTerminal } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { ApiError, api, app, desktopOs, serverUrl } from "../api/http";
@@ -25,6 +25,7 @@ import { usePending } from "../updates";
 import { About } from "./About";
 import { AiPage, useAiSummary } from "./AiSettings";
 import { BackgroundSettings } from "./Background";
+import { ChatLog } from "./ChatLog";
 import { DesktopBackground } from "./DesktopBackground";
 import { MAX_KEEP_DONE, setKeepDone, useKeepDone } from "./keep-done";
 import { type SettingsSection, settingsUrl } from "./nav";
@@ -39,6 +40,7 @@ const TITLES: Record<SettingsSection, string> = {
   appearance: "外观",
   background: "提醒和后台",
   ai: "AI 整理",
+  chats: "AI 对话记录",
   agent: "agent 接入",
   invites: "邀请注册",
   about: "关于",
@@ -51,6 +53,7 @@ const ICONS: Record<Exclude<SettingsSection, "account">, LucideIcon> = {
   appearance: Palette,
   background: Bell,
   ai: Sparkles,
+  chats: MessageSquare,
   agent: KeyRound,
   invites: Mail,
   about: Info,
@@ -68,7 +71,7 @@ function useSections(): SettingsSection[][] {
   const { user } = useSession();
   const inLocal = local.inLocalMode();
   const groups: SettingsSection[][] = [[inLocal ? "local" : "account"], app ? ["appearance", "background"] : ["appearance"]];
-  groups.push(!inLocal || app === "desktop" ? ["ai", "agent"] : ["ai"]);
+  groups.push(!inLocal || app === "desktop" ? ["ai", "chats", "agent"] : ["ai", "chats"]);
   if (user.is_admin && !inLocal) groups.push(["invites"]);
   groups.push(["about"]);
   return groups;
@@ -159,11 +162,12 @@ export function SettingsPage({ section, onSignOut }: { section: SettingsSection;
     appearance: () => <Appearance />,
     background: () => (app === "android" ? <BackgroundSettings /> : <DesktopBackground />),
     ai: () => <AiPage />,
+    chats: () => <ChatLog />,
     agent: () => <Agent />,
     invites: () => <Invites />,
     about: () => <About />,
   };
-  return <div className="settings-page">{pages[section]()}</div>;
+  return <div className={`settings-page${section === "chats" ? " chatlog-page" : ""}`}>{pages[section]()}</div>;
 }
 
 /** What went wrong talking to the server, shown at the top of the page. */

@@ -683,6 +683,45 @@ async fn a_chat_can_ask_with_choices_and_its_suggestion_first() {
 }
 
 #[tokio::test]
+async fn conversations_are_listed_by_folder_newest_first_and_cleared_one_at_a_time() {
+    let (t, fake) = server();
+    let s = t.admin().await;
+    t.ok(&s, "add", json!({ "title": "读第三章", "folder": "/读书" })).await;
+    let folder = t.snapshot(&s).await["folders"][0]["id"].as_str().unwrap().to_owned();
+    t.call("PUT", "/ai/settings", Some(&s), Some(config())).await;
+
+    fake.answer(Ok("读书的回答"));
+    let in_folder = json!({ "folder_id": folder, "text": "读书里聊一句", "local_time": "2026-11-04 16:30 星期三" });
+    assert_eq!(t.call_raw("POST", "/ai/chat", Some(&s), Some(in_folder)).await.0, StatusCode::OK);
+    // Apart, so that one is plainly the newer.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    fake.answer(Ok("根目录的回答"));
+    let in_root = json!({ "text": "根目录聊一句", "local_time": "2026-11-04 16:30 星期三" });
+    assert_eq!(t.call_raw("POST", "/ai/chat", Some(&s), Some(in_root)).await.0, StatusCode::OK);
+
+    let list = t.call("GET", "/ai/chats", Some(&s), None).await.body;
+    let rows = list.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["folder_id"], Value::Null);
+    assert_eq!(rows[0]["messages"], 2);
+    assert_eq!(rows[0]["last_role"], "assistant");
+    assert_eq!(rows[0]["last"], "根目录的回答");
+    assert_eq!(rows[1]["folder_id"], folder);
+    assert_eq!(rows[1]["last"], "读书的回答");
+
+    // API tokens are for agents, which have no business with the chat pages.
+    let token = t.call("POST", "/tokens", Some(&s), Some(json!({ "name": "Claude Code", "scope": "write" }))).await.body;
+    assert_eq!(t.call("GET", "/ai/chats", Some(token["secret"].as_str().unwrap()), None).await.status, StatusCode::FORBIDDEN);
+
+    // Clearing one conversation leaves the other.
+    assert_eq!(t.call("DELETE", &format!("/ai/chat?folder_id={folder}"), Some(&s), None).await.status, StatusCode::NO_CONTENT);
+    let list = t.call("GET", "/ai/chats", Some(&s), None).await.body;
+    let rows = list.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["folder_id"], Value::Null);
+}
+
+#[tokio::test]
 async fn a_chat_takes_the_settings_a_device_keeps() {
     let fake = Arc::new(Fake::default());
     let t = TestApp::with_ai(Ai::new(None, fake.clone()));
