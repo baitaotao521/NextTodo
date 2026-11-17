@@ -67,7 +67,8 @@ jobs:
           COPY nexttodo-server /nexttodo-server
           COPY nexttodo /usr/local/bin/nexttodo
           COPY web /web
-          RUN chmod -R a+rX /nexttodo-server /web /usr/local/bin/nexttodo
+          RUN chmod a+rx /nexttodo-server /usr/local/bin/nexttodo
+          RUN chmod -R a+rX /web
           ENV NEXTTODO_DATA=/data NEXTTODO_WEB=/web NEXTTODO_LISTEN=0.0.0.0:8080
           USER 65534:65534
           EXPOSE 8080
