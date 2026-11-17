@@ -39,6 +39,8 @@ function setup(saved: Saved = Store.empty()) {
   const sent: Mutation[] = [];
   const rejected: [Mutation, ErrorBody][] = [];
   const arrived: LogEntry[][] = [];
+  const uploaded = new Set<string>();
+  const awaited: [string, boolean][] = [];
   let last = saved;
   const outbox = new Map(saved.outbox.map((p) => [p.mutation.id, p]));
   const store = new Store(ME, saved, {
@@ -49,6 +51,12 @@ function setup(saved: Saved = Store.empty()) {
       return written;
     },
     send: (m) => sent.push(m),
+    uploaded: (m) => m.ops.every((op) => op.op !== "attachment.add" || uploaded.has(op.id)),
+    awaiting(m, missing) {
+      awaited.push([m.id, missing]);
+      // As the session's files do: missing, they are not uploaded from then on.
+      if (missing) for (const op of m.ops) if (op.op === "attachment.add") uploaded.delete(op.id);
+    },
     rejected: (m, e) => rejected.push([m, e]),
     arrived: (e) => arrived.push(e),
   });
@@ -58,7 +66,7 @@ function setup(saved: Saved = Store.empty()) {
     written = new Promise((r) => (release = r));
     return release;
   };
-  return { store, sent, rejected, arrived, titles, hold, saved: () => last };
+  return { store, sent, rejected, arrived, titles, hold, uploaded, awaited, saved: () => last };
 }
 
 /** Lets the saves made so far finish. */
@@ -89,7 +97,7 @@ test("a change shows at once, is sent once saved, and leaves the queue when the 
 });
 
 test("changes the Android widget could not send join the queue in the order made, and are sent once saved", async () => {
-  const { store, sent, hold, saved } = setup({ ...Store.empty(), base: { folders: [], tasks: [task(1, "交房租")], dependencies: [], ai_jobs: [], shares: [], people: [] } });
+  const { store, sent, hold, saved } = setup({ ...Store.empty(), base: { folders: [], tasks: [task(1, "交房租")], dependencies: [], attachments: [], ai_jobs: [], shares: [], people: [] } });
   const mine = store.commit([{ op: "task.create", id: id(2), title: "买菜", sort_key: "a2" }]);
   await settle();
   const earlier = { id: uuidv7({ msecs: 1 }), ops: [{ op: "task.update" as const, id: id(1), done: true }] };
@@ -104,7 +112,7 @@ test("changes the Android widget could not send join the queue in the order made
 });
 
 test("changes from elsewhere merge under the ones still queued", () => {
-  const { store, titles, arrived } = setup({ ...Store.empty(), base: { folders: [], tasks: [task(1, "写初稿")], dependencies: [], ai_jobs: [], shares: [], people: [] } });
+  const { store, titles, arrived } = setup({ ...Store.empty(), base: { folders: [], tasks: [task(1, "写初稿")], dependencies: [], attachments: [], ai_jobs: [], shares: [], people: [] } });
   store.commit([{ op: "task.update", id: id(1), title: "写终稿" }]);
   const other = { kind: "task" as const, before: null, after: task(2, "投稿") };
   store.receive([{ seq: 5, id: id(50), user: ME, actor: "Claude Code", effects: [other], created_at: 0 }], 5);
@@ -129,7 +137,7 @@ test("a change another tab heard turned down leaves the view without being repor
 });
 
 test("a change that no longer applies waits for the server instead of breaking the view", () => {
-  const { store, titles } = setup({ ...Store.empty(), base: { folders: [], tasks: [task(1, "旧")], dependencies: [], ai_jobs: [], shares: [], people: [] } });
+  const { store, titles } = setup({ ...Store.empty(), base: { folders: [], tasks: [task(1, "旧")], dependencies: [], attachments: [], ai_jobs: [], shares: [], people: [] } });
   const { id: change } = store.commit([{ op: "task.update", id: id(1), title: "新" }]);
   store.receive([{ seq: 1, id: id(60), user: ME, actor: null, effects: [{ kind: "task", before: task(1, "旧"), after: null }], created_at: 0 }], 1);
   expect(titles()).toEqual([]);
@@ -152,9 +160,9 @@ test("a refused change is not queued", () => {
 });
 
 test("a fresh copy keeps the queued changes on top", () => {
-  const { store, titles } = setup({ ...Store.empty(), seq: 3, base: { folders: [], tasks: [task(1, "旧")], dependencies: [], ai_jobs: [], shares: [], people: [] } });
+  const { store, titles } = setup({ ...Store.empty(), seq: 3, base: { folders: [], tasks: [task(1, "旧")], dependencies: [], attachments: [], ai_jobs: [], shares: [], people: [] } });
   store.commit([{ op: "task.create", id: id(2), title: "新", sort_key: "a2" }]);
-  store.resync({ user: "u", seq: 90, folders: [], tasks: [task(3, "服务器上的")], dependencies: [], ai_jobs: [], shares: [], people: [] });
+  store.resync({ user: "u", seq: 90, folders: [], tasks: [task(3, "服务器上的")], dependencies: [], attachments: [], ai_jobs: [], shares: [], people: [] });
   expect(titles()).toEqual(["新", "服务器上的"]);
   expect(store.since).toBe(90);
 });
@@ -164,7 +172,7 @@ test("a change the fresh copy already has leaves the queue when the server ackno
   store.commit([{ op: "task.create", id: id(1), title: "交电费", sort_key: "a1" }]);
   await settle();
   // The server applied it at 5, but the reply was lost; later the copy was too old and downloaded afresh.
-  store.resync({ user: "u", seq: 9, folders: [], tasks: [task(1, "交电费")], dependencies: [], ai_jobs: [], shares: [], people: [] });
+  store.resync({ user: "u", seq: 9, folders: [], tasks: [task(1, "交电费")], dependencies: [], attachments: [], ai_jobs: [], shares: [], people: [] });
   expect(store.getView().stuck.has(sent[0].id)).toBe(true);
   store.acked(sent[0].id, 12);
   expect(store.unconfirmed).toHaveLength(1);
@@ -202,4 +210,36 @@ test("a task becomes ready as its start comes, the view moving on then and not b
   vi.setSystemTime(new Date(2026, 10, 12, 19, 30));
   store.tick();
   expect([status(), moved]).toEqual(["waiting", 2]);
+});
+
+test("a change adding attachments goes once its files are uploaded, and those after it once the server has it", async () => {
+  const { store, sent, uploaded, awaited } = setup();
+  store.connected();
+  store.commit([{ op: "task.create", id: id(1), title: "报销", sort_key: "a1" }]);
+  const add = store.commit([{ op: "attachment.add", id: id(2), name: "发票.png", type: "image/png", size: 3, task_id: id(1) }]);
+  store.commit([{ op: "attachment.update", id: id(2), name: "发票 1.png" }]);
+  await settle();
+  expect(sent.map((m) => m.id)).toHaveLength(1);
+  expect(awaited.at(-1)).toEqual([add.id, false]);
+
+  uploaded.add(id(2));
+  store.flush();
+  expect(sent.map((m) => m.id).at(-1)).toBe(add.id);
+  expect(sent).toHaveLength(2);
+
+  // Its file is not on the server after all: it waits to be uploaded again, and what comes after it
+  // with it.
+  store.reject(add.id, { code: "file_missing", message: "附件的文件不在服务器上，请重新上传" });
+  expect(awaited.at(-1)).toEqual([add.id, true]);
+  expect(store.getView().pending).toBe(3);
+  store.flush();
+  expect(sent).toHaveLength(2);
+  uploaded.add(id(2));
+  store.flush();
+  expect(sent).toHaveLength(3);
+  expect(sent.at(-1)!.id).toBe(add.id);
+
+  store.receive([echo(sent[0], 1, []), echo(sent[2], 2, [])], 2);
+  expect(sent).toHaveLength(4);
+  expect(sent.at(-1)!.ops[0].op).toBe("attachment.update");
 });

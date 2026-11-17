@@ -1,14 +1,16 @@
 // The settings: a home page that lists the sections, each a page of its own (docs/ui.md#设置).
 
-import { Bell, ChevronRight, Copy, HardDrive, Info, KeyRound, type LucideIcon, Mail, Monitor, Palette, Plus, Sparkles, SquareTerminal } from "lucide-react";
+import { Bell, ChevronRight, Copy, HardDrive, Info, KeyRound, type LucideIcon, Mail, Monitor, Palette, Paperclip, Plus, Sparkles, SquareTerminal } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { ApiError, api, app, desktopOs, serverUrl } from "../api/http";
 import type { CreatedToken } from "../api/types/CreatedToken";
 import type { Invite } from "../api/types/Invite";
 import type { Scope } from "../api/types/Scope";
+import type { ServerSettings } from "../api/types/ServerSettings";
 import type { TokenInfo } from "../api/types/TokenInfo";
 import type { User } from "../api/types/User";
+import { fetchServerSettings, keepServerSettings, serverSettings } from "../attach";
 import { ago } from "../domain/dates";
 import { type CliStatus, cli } from "../desktop";
 import { checkDisplayName, checkTokenName } from "../domain/text";
@@ -17,7 +19,7 @@ import * as local from "../local";
 import { newer, useServerVersions } from "../server-update";
 import { useSession } from "../session";
 import { type Theme, setTheme, useTheme } from "../theme";
-import { Seg, Stepper } from "../ui/controls";
+import { Seg, Stepper, Switch } from "../ui/controls";
 import { Modal, Tip, forUser, useFeedback } from "../ui/feedback";
 import { Help } from "../ui/help";
 import { Icon } from "../ui/icons";
@@ -26,6 +28,7 @@ import { About } from "./About";
 import { AiPage, useAiSummary } from "./AiSettings";
 import { BackgroundSettings } from "./Background";
 import { DesktopBackground } from "./DesktopBackground";
+import { DriveSyncDialog, syncLine, useDriveSync } from "./DriveSync";
 import { MAX_KEEP_DONE, setKeepDone, useKeepDone } from "./keep-done";
 import { type SettingsSection, settingsUrl } from "./nav";
 
@@ -41,6 +44,7 @@ const TITLES: Record<SettingsSection, string> = {
   ai: "AI 整理",
   agent: "agent 接入",
   invites: "邀请注册",
+  attachments: "附件",
   about: "关于",
 };
 
@@ -53,6 +57,7 @@ const ICONS: Record<Exclude<SettingsSection, "account">, LucideIcon> = {
   ai: Sparkles,
   agent: KeyRound,
   invites: Mail,
+  attachments: Paperclip,
   about: Info,
 };
 
@@ -69,7 +74,9 @@ function useSections(): SettingsSection[][] {
   const inLocal = local.inLocalMode();
   const groups: SettingsSection[][] = [[inLocal ? "local" : "account"], app ? ["appearance", "background"] : ["appearance"]];
   groups.push(!inLocal || app === "desktop" ? ["ai", "agent"] : ["ai"]);
-  if (user.is_admin && !inLocal) groups.push(["invites"]);
+  // The server's own: its admin's, or in local mode the user's, who has it alone.
+  const server: SettingsSection[] = [...(user.is_admin && !inLocal ? (["invites"] as const) : []), ...(user.is_admin || inLocal ? (["attachments"] as const) : [])];
+  if (server.length) groups.push(server);
   groups.push(["about"]);
   return groups;
 }
@@ -92,6 +99,7 @@ export function SettingsHome() {
   const values: Partial<Record<SettingsSection, string>> = {
     appearance: THEMES.find(([t]) => t === theme)![1],
     ai,
+    attachments: serverSettings().compress_images ? "压缩图片" : "上传原图",
     about: pending ? "有新版本" : upgradable ? "服务器可升级" : undefined,
   };
   const open = (s: SettingsSection) => () => navigate(settingsUrl(s));
@@ -119,10 +127,7 @@ export function SettingsHome() {
                   <Icon of={ICONS[s]} size={18} />
                 </span>
                 {s === "local" ? (
-                  <span className="folder-main">
-                    <span>本机模式</span>
-                    <span className="folder-sub">数据只存在这台设备上，不同步</span>
-                  </span>
+                  <LocalCard />
                 ) : (
                   <>
                     <span>{TITLES[s]}</span>
@@ -161,9 +166,34 @@ export function SettingsPage({ section, onSignOut }: { section: SettingsSection;
     ai: () => <AiPage />,
     agent: () => <Agent />,
     invites: () => <Invites />,
+    attachments: () => <AttachmentSettings />,
     about: () => <About />,
   };
   return <div className="settings-page">{pages[section]()}</div>;
+}
+
+/** Whether photos are made smaller before they are uploaded (docs/design.md#附件), for everyone on the
+ * server. As last fetched, then as the server has it. */
+function AttachmentSettings() {
+  const { snack } = useFeedback();
+  const [on, setOn] = useState(() => serverSettings().compress_images);
+  useEffect(() => {
+    void fetchServerSettings().then(() => setOn(serverSettings().compress_images));
+  }, []);
+  const change = async (to: boolean) => {
+    try {
+      const s = await api<ServerSettings>("PUT", "/settings", { compress_images: to } satisfies ServerSettings);
+      keepServerSettings(s);
+      setOn(s.compress_images);
+    } catch (e) {
+      snack(forUser("修改设置", e));
+    }
+  };
+  return (
+    <div className="group">
+      <Switch label="压缩图片" sub="上传前把 JPEG 照片缩到长边 2560 像素以内，并去掉拍摄地点等信息。关闭后一律上传原图。对所有用户生效。" on={on} onChange={(to) => void change(to)} />
+    </div>
+  );
 }
 
 /** What went wrong talking to the server, shown at the top of the page. */
@@ -260,11 +290,24 @@ function Account({ onSignOut }: { onSignOut(): void }) {
   );
 }
 
-/** In place of the account: the data is on this device only, its backups, and how to move to a
- * server. */
+/** In place of the account's row: where the data is, and how syncing it through a drive goes. */
+function LocalCard() {
+  const [sync] = useDriveSync(false);
+  return (
+    <span className="folder-main">
+      <span>本机模式</span>
+      <span className="folder-sub">{sync ? syncLine(sync, new Date()) : " "}</span>
+    </span>
+  );
+}
+
+/** In place of the account: the data is on this device, syncing it with others through a drive, its
+ * backups, and how to move to a server. */
 function LocalMode() {
   const session = useSession();
   const { confirm, snack } = useFeedback();
+  const [sync, load] = useDriveSync(false);
+  const [syncing, setSyncing] = useState(false);
   const backup = async () => {
     try {
       const to = await local.backup(session.store);
@@ -285,23 +328,27 @@ function LocalMode() {
   return (
     <>
       <p className="empty">
-        数据只存在这台设备上，不同步。定期备份，换设备时用备份恢复。<Help to="local">说明</Help>
+        {sync?.drive ? "数据存在这台设备上，借网盘和别的设备同步。" : "数据只存在这台设备上。可以借网盘和别的设备同步。"}定期备份，换设备时用备份恢复。
+        <Help to="local">说明</Help>
       </p>
       <div className="group">
+        <Action label="借网盘同步" value={sync ? (sync.drive ? "已开启" : "未开启") : undefined} onClick={() => setSyncing(true)} />
         <Action label="备份" onClick={backup} />
         <Action label="恢复" onClick={restore} />
         <Action label="改用服务器" onClick={leave} />
       </div>
+      {syncing && <DriveSyncDialog onClose={() => (setSyncing(false), void load())} />}
     </>
   );
 }
 
-function Action({ label, onClick }: { label: string; onClick(): void }) {
+function Action({ label, value, onClick }: { label: string; value?: string; onClick(): void }) {
   return (
     <button className="row" onClick={onClick}>
       <div className="row-inner">
         <span>{label}</span>
-        <span className="chev" style={{ marginLeft: "auto" }}>
+        <span className="row-value">{value}</span>
+        <span className="chev">
           <Icon of={ChevronRight} size={18} />
         </span>
       </div>

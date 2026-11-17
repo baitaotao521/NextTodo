@@ -339,7 +339,7 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
                     <div className={`chat-msg ${m.role}`}>
                       {m.role === "assistant" ? (
                         <Suspense fallback={<p className="chat-text">{m.content}</p>}>
-                          <Markdown source={m.content} onChange={() => {}} />
+                          <Markdown source={m.content} attachments={[]} onChange={() => {}} onAttachment={() => {}} />
                         </Suspense>
                       ) : (
                         <p className="chat-text">{m.content}</p>
@@ -355,7 +355,7 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
               {answering && (
                 <div className="chat-msg assistant writing">
                   <Suspense fallback={<p className="chat-text">{answering}</p>}>
-                    <Markdown source={answering} onChange={() => {}} />
+                    <Markdown source={answering} attachments={[]} onChange={() => {}} onAttachment={() => {}} />
                   </Suspense>
                 </div>
               )}

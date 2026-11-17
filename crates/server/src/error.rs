@@ -57,6 +57,16 @@ impl ApiError {
         Self::new(StatusCode::CONFLICT, "conflict", message)
     }
 
+    /// An attachment's file is not on the server: never uploaded, or cleared away unused. The client
+    /// uploads it again and sends the same change (docs/web.md#附件).
+    pub fn file_missing() -> Self {
+        Self::new(StatusCode::NOT_FOUND, "file_missing", "附件的文件不在服务器上，请重新上传")
+    }
+
+    pub fn too_large() -> Self {
+        Self::new(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "文件不能超过 20 MB")
+    }
+
     /// `path` goes around the cycle and ends where it starts; `titles` spells it out for the user.
     pub fn cycle(path: Vec<TaskId>, titles: &str) -> Self {
         let mut e = Self::new(StatusCode::CONFLICT, "cycle", format!("添加该依赖将形成循环：{titles}"));
@@ -75,6 +85,28 @@ impl ApiError {
 
     pub fn resync() -> Self {
         Self::new(StatusCode::GONE, "resync", "本地数据已过期，需要重新下载")
+    }
+
+    /// The server failed; what went wrong is in the log.
+    pub fn internal() -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", "服务器错误，请稍后重试")
+    }
+
+    /// The drive's folder has data: syncing with it replaces this device's, which is asked first
+    /// (docs/local.md#开启).
+    pub fn drive_has_data() -> Self {
+        Self::new(StatusCode::CONFLICT, "has_data", "网盘的这个文件夹里已有数据：开启会用它替换这台设备上的全部数据")
+    }
+
+    /// Files of attachments in use are in the drive only, and can't be downloaded now: stopping
+    /// syncing anyway leaves them unreadable here, which is asked first (docs/local.md#停止).
+    pub fn files_not_here() -> Self {
+        Self::new(StatusCode::CONFLICT, "files_not_here", "有附件的文件还没有从网盘下载下来，现在停止同步，这些附件就打不开了")
+    }
+
+    /// The drive local mode syncs through did not take the change in time (docs/local.md#排定先后).
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", message)
     }
 }
 
@@ -134,14 +166,21 @@ impl std::error::Error for ApiError {}
 impl From<rusqlite::Error> for ApiError {
     fn from(e: rusqlite::Error) -> Self {
         tracing::error!(error = %e, "database error");
-        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", "服务器错误，请稍后重试")
+        Self::internal()
+    }
+}
+
+impl From<std::io::Error> for ApiError {
+    fn from(e: std::io::Error) -> Self {
+        tracing::error!(error = %e, "file error");
+        Self::internal()
     }
 }
 
 impl From<serde_json::Error> for ApiError {
     fn from(e: serde_json::Error) -> Self {
         tracing::error!(error = %e, "stored JSON error");
-        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", "服务器错误，请稍后重试")
+        Self::internal()
     }
 }
 

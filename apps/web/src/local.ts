@@ -6,7 +6,9 @@
 import { Preferences } from "@capacitor/preferences";
 import { invoke } from "@tauri-apps/api/core";
 import { NextTodo } from "./android";
-import { api, app, connectLocal, dropSession } from "./api/http";
+import { ApiError, api, app, connectLocal, dropSession } from "./api/http";
+import type { DriveConfig } from "./api/types/DriveConfig";
+import type { DriveTurnOn } from "./api/types/DriveTurnOn";
 import type { User } from "./api/types/User";
 import { isoDate } from "./domain/dates";
 import { Session } from "./session";
@@ -25,7 +27,7 @@ export interface Started {
   epoch: string;
 }
 
-/** How the app's native part says the server did not start. */
+/** How the app's native part says the server did not start, or cannot be reached. */
 type Rejected = { message: string; code?: string; locked?: boolean };
 
 /** What the app's native part does for local mode: `apps/desktop/src-tauri/src/local.rs`, and
@@ -37,7 +39,7 @@ const shell =
         mode: async () => (await Preferences.get({ key: "mode" })).value === "local",
         setMode: (on: boolean) => NextTodo.setLocalMode({ on }),
         start: () => NextTodo.openLocal(),
-        locked: (e: Rejected) => e.code === "locked",
+        reason: (e: Rejected): StartFailed["reason"] => (e.code === "locked" || e.code === "blocked" ? e.code : null),
         backup: async (name: string) => (await NextTodo.backupLocal({ name })).saved ?? null,
         prepareRestore: async () => (await NextTodo.prepareRestore()).picked,
         commitRestore: () => NextTodo.commitRestore(),
@@ -47,7 +49,7 @@ const shell =
         mode: () => invoke<boolean>("local_mode"),
         setMode: (on: boolean) => invoke<void>("set_local_mode", { on }),
         start: (renew: boolean) => invoke<Started>("start_local", { renew }),
-        locked: (e: Rejected) => !!e.locked,
+        reason: (e: Rejected): StartFailed["reason"] => (e.locked ? "locked" : null),
         backup: (name: string) => invoke<string | null>("backup_local", { name }),
         prepareRestore: () => invoke<boolean>("prepare_restore"),
         commitRestore: () => invoke<void>("commit_restore"),
@@ -69,11 +71,13 @@ async function setMode(on: boolean) {
   mode = on;
 }
 
-/** The server did not start; `locked` while an earlier process of the app still has its data. */
+/** The server did not start, or the page may not reach it: `locked` while an earlier process of the app
+ * still has its data, `blocked` while the system keeps the app off the network (Android). Trying again
+ * may help with either. */
 export class StartFailed extends Error {
   constructor(
     message: string,
-    readonly locked: boolean,
+    readonly reason: "locked" | "blocked" | null,
   ) {
     super(message);
   }
@@ -86,7 +90,7 @@ async function start(renew: boolean): Promise<Started> {
     return await shell.start(renew);
   } catch (e) {
     const rejected = e as Rejected;
-    throw new StartFailed(rejected.message, shell.locked(rejected));
+    throw new StartFailed(rejected.message, shell.reason(rejected));
   }
 }
 
@@ -164,7 +168,54 @@ export function sent(store: Store): Promise<boolean> {
  * The changes made here are in it. */
 export async function backup(store: Store): Promise<string | null> {
   if (!(await sent(store))) throw new Error("备份失败：还有改动尚未保存，请稍后重试");
-  return shell.backup(`NextTodo-备份-${isoDate(new Date())}.db`);
+  return shell.backup(`NextTodo-备份-${isoDate(new Date())}.tar`);
+}
+
+/** How long turning syncing on or off may take: checking the drive, or downloading its data, or the
+ * files of the attachments in use. */
+const SETTING_MS = 10 * 60_000;
+
+/** Turns syncing through the drive `config` says on (docs/local.md#开启). On a folder another device
+ * syncs through, `confirm` is asked first; once it agreed, the data here is replaced with that, and
+ * the app restarts. False when it declined. */
+export async function syncThrough(config: DriveConfig, confirm: (body: string) => Promise<boolean>, session: Session): Promise<boolean> {
+  try {
+    await api<void>("PUT", "/local/sync", { config, replace: false } satisfies DriveTurnOn, SETTING_MS);
+    return true;
+  } catch (e) {
+    if (!(e instanceof ApiError && e.code === "has_data")) throw e;
+  }
+  const body = [
+    "网盘的这个文件夹里已经有别的设备同步的数据，开启后这台设备上的数据全部换成它，不合并。",
+    "现在的数据会留在数据目录的旧数据文件夹里。",
+    app === "desktop" ? "agent 用的令牌要重新生成。" : "",
+    "NextTodo 会重新启动。",
+  ].join("");
+  if (!(await confirm(body))) return false;
+  if (!(await sent(session.store))) throw new Error("开启失败：还有改动尚未保存，请稍后重试");
+  await api<void>("PUT", "/local/sync", { config, replace: true } satisfies DriveTurnOn, SETTING_MS);
+  // The drive's data replaces this at the next start, as a restore's does.
+  try {
+    await session.close(true);
+  } finally {
+    await shell.restart();
+  }
+  return true;
+}
+
+/** Stops syncing through the drive (docs/local.md#停止), once the files of the attachments in use are
+ * downloaded; when they can't be now, `confirm` is asked whether to stop without them. False when it
+ * declined. */
+export async function stopSyncing(confirm: (body: string) => Promise<boolean>): Promise<boolean> {
+  try {
+    await api<void>("DELETE", "/local/sync", undefined, SETTING_MS);
+    return true;
+  } catch (e) {
+    if (!(e instanceof ApiError && e.code === "files_not_here")) throw e;
+    if (!(await confirm(e.message))) return false;
+  }
+  await api<void>("DELETE", "/local/sync?force=true", undefined, SETTING_MS);
+  return true;
 }
 
 /** Asks for a backup and, once `confirm` has agreed to what goes, replaces the data with it and

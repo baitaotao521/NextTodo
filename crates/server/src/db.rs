@@ -24,11 +24,14 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/011_share.sql"),
     include_str!("../migrations/012_start_time.sql"),
     include_str!("../migrations/013_ai_notes.sql"),
-    include_str!("../migrations/014_ai_chat.sql"),
-    include_str!("../migrations/015_ai_job_chat.sql"),
-    include_str!("../migrations/016_ai_message_job.sql"),
-    include_str!("../migrations/017_ai_message_ask.sql"),
-    include_str!("../migrations/018_ai_chats.sql"),
+    include_str!("../migrations/014_attachments.sql"),
+    include_str!("../migrations/015_ai_vision.sql"),
+    include_str!("../migrations/016_sync.sql"),
+    include_str!("../migrations/017_ai_chat.sql"),
+    include_str!("../migrations/018_ai_job_chat.sql"),
+    include_str!("../migrations/019_ai_message_job.sql"),
+    include_str!("../migrations/020_ai_message_ask.sql"),
+    include_str!("../migrations/021_ai_chats.sql"),
 ];
 
 #[derive(Clone)]

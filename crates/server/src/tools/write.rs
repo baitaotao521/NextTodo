@@ -4,23 +4,29 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use nexttodo_core::board::{Board, Now, Status};
-use nexttodo_core::model::{Change, Date, Description, Due, Effect, FolderId, MutationId, Name, Repeat, RepeatFrom, Task, TaskId, Title};
+use nexttodo_core::model::{
+    AttachmentId, Change, Date, Description, Due, Effect, FileName, FileSize, FolderId, MediaType, MutationId, Name, Repeat, RepeatFrom,
+    Task, TaskId, Title,
+};
 use nexttodo_core::ops::Op;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
 use uuid::Uuid;
 
 use super::args::{
-    AddArgs, ApplyArgs, DeleteArgs, DepArgs, DoneArgs, EditArgs, MkdirArgs, MoveArgs, Plan, PlanRef, PlanTask, RenameArgs, RepeatText,
-    Replace, ShareArgs, TaskRef, TasksArgs, UndoArgs, UnshareArgs, WhenText, task_ref,
+    AddArgs, ApplyArgs, AttachArgs, DeleteArgs, DepArgs, DetachArgs, DoneArgs, EditArgs, MkdirArgs, MoveArgs, Plan, PlanRef, PlanTask,
+    RenameArgs, RepeatText, Replace, ShareArgs, TaskRef, TasksArgs, UndoArgs, UnshareArgs, WhenText, task_ref,
 };
 use super::text::{self, Names, task_view};
 use super::{Output, WriteFn, find_folder, find_task, person};
 use crate::auth::Auth;
 use crate::error::ApiError;
+use crate::files::Files;
 use crate::mutate::{self, Actor};
-use crate::store;
+use crate::store::{self, StoredFile};
 
 /// What write tools build from.
 pub struct WriteCx<'a> {
@@ -29,6 +35,8 @@ pub struct WriteCx<'a> {
     pub board: &'a Board<'a>,
     /// As the user gave it: a repeating task done needs it.
     pub today: Option<Date>,
+    pub now: i64,
+    pub files: &'a Files,
 }
 
 /// The operations a write tool wants applied.
@@ -48,43 +56,94 @@ impl From<Vec<Op>> for Write {
 pub fn run(
     c: &mut Connection,
     auth: &Auth,
-    id: Option<MutationId>,
+    files: &Files,
+    id: MutationId,
     now: i64,
     local: Option<Now>,
-    build: WriteFn,
+    build: &WriteFn,
 ) -> Result<(Output, Vec<String>), ApiError> {
     let actor = Actor { user: &auth.user_id, token_id: &auth.token_id, via: auth.via() };
-    let id = id.unwrap_or_else(|| MutationId(Uuid::now_v7()));
     let tx = c.transaction()?;
-    if let Some(done) = mutate::earlier(&tx, &actor, id)? {
-        // A retry gets the first answer again, not one made from what has changed since.
-        let reply: Option<String> = tx.query_row("SELECT reply FROM mutations WHERE seq = ?1", [done.seq], |r| r.get(0))?;
-        let output = match reply {
-            Some(reply) => serde_json::from_str(&reply)?,
-            // Past the retention period, or sent by an app rather than through a tool. Only the
-            // receipt is given: the old effects cannot be read against today's folders.
-            None => Output { text: format!("批次 {} 已保存，本次未重复生效", done.seq), data: json!({ "batch": done.seq }) },
-        };
+    if let Some(output) = earlier(&tx, &actor, id)? {
         return Ok((output, Vec::new()));
     }
-    let snap = store::snapshot(&tx, &auth.user_id)?;
-    let today = local.as_ref().map(|l| l.today.clone());
-    let local = local.unwrap_or_else(|| Now::utc(now));
-    let write = build(&WriteCx { c: &tx, user: &auth.user_id, board: &Board::new(&snap, local.clone(), &auth.user_id), today })?;
-    let done = mutate::run(&tx, &actor, &write.ops, now)?;
-    let effects = done.view(&auth.user_id);
-    // Rendered inside the transaction, so a preview still sees what it would have made.
-    let after = store::snapshot(&tx, &auth.user_id)?;
-    let b = Board::new(&after, local, &auth.user_id);
-    let names = Names::new(&after, &auth.user_id, store::people(&tx, &text::strangers(&after, &effects))?);
-    if write.preview {
-        return Ok((report(&b, names, None, &effects), Vec::new()));
-    }
-    let recorded = mutate::record(&tx, &actor, id, &write.ops, &done, now)?;
-    let output = report(&b, names, Some(recorded.seq), &effects);
-    tx.execute("UPDATE mutations SET reply = ?1 WHERE seq = ?2", params![serde_json::to_string(&output)?, recorded.seq])?;
+    let (ops, done) = match attempt(&tx, &actor, files, now, local.clone(), build)? {
+        Attempt::Preview(output) => return Ok((output, Vec::new())),
+        Attempt::Made { ops, done } => (ops, done),
+    };
+    let recorded = mutate::record(&tx, &actor, id, &ops, &done, now)?;
+    let output = reported(&tx, &auth.user_id, now, local, recorded.seq, &done.view(&auth.user_id))?;
     tx.commit()?;
     Ok((output, recorded.to))
+}
+
+/// The answer to tool change `id` made before: a retry gets the first answer again, not one made
+/// from what has changed since.
+pub(crate) fn earlier(c: &Connection, actor: &Actor, id: MutationId) -> Result<Option<Output>, ApiError> {
+    let Some(done) = mutate::earlier(c, actor, id)? else { return Ok(None) };
+    let reply: Option<String> = c.query_row("SELECT reply FROM mutations WHERE seq = ?1", [done.seq], |r| r.get(0))?;
+    Ok(Some(match reply {
+        Some(reply) => serde_json::from_str(&reply)?,
+        // Past the retention period, sent by an app rather than through a tool, or made through a
+        // drive with this app stopped before it was written here. Only the receipt is given: the old
+        // effects cannot be read against today's folders.
+        None => Output { text: format!("批次 {} 已保存，本次未重复生效", done.seq), data: json!({ "batch": done.seq }) },
+    }))
+}
+
+/// What a write tool does on `c`.
+pub(crate) enum Attempt {
+    /// It only shows what it would do.
+    Preview(Output),
+    Made {
+        ops: Vec<Op>,
+        done: mutate::Done,
+    },
+}
+
+/// Builds the tool's operations from the data on `c` and applies them there, the caller to record or
+/// roll them back.
+pub(crate) fn attempt(
+    c: &Connection,
+    actor: &Actor,
+    files: &Files,
+    now: i64,
+    local: Option<Now>,
+    build: &WriteFn,
+) -> Result<Attempt, ApiError> {
+    let user = actor.user;
+    let snap = store::snapshot(c, user)?;
+    let today = local.as_ref().map(|l| l.today.clone());
+    let board = Board::new(&snap, local.clone().unwrap_or_else(|| Now::utc(now)), user);
+    let write = build(&WriteCx { c, user, board: &board, today, now, files })?;
+    let done = mutate::run(c, actor, &write.ops, now)?;
+    if write.preview {
+        // Rendered before rolling back, so it still sees what it would have made.
+        return Ok(Attempt::Preview(rendered(c, user, now, local, None, &done.view(user))?));
+    }
+    Ok(Attempt::Made { ops: write.ops, done })
+}
+
+/// The answer to a tool change recorded as `batch`, read against the data after it, and kept for a
+/// retry.
+pub(crate) fn reported(
+    c: &Connection,
+    user: &str,
+    now: i64,
+    local: Option<Now>,
+    batch: i64,
+    effects: &[Effect],
+) -> Result<Output, ApiError> {
+    let output = rendered(c, user, now, local, Some(batch), effects)?;
+    c.execute("UPDATE mutations SET reply = ?1 WHERE seq = ?2", params![serde_json::to_string(&output)?, batch])?;
+    Ok(output)
+}
+
+fn rendered(c: &Connection, user: &str, now: i64, local: Option<Now>, batch: Option<i64>, effects: &[Effect]) -> Result<Output, ApiError> {
+    let after = store::snapshot(c, user)?;
+    let b = Board::new(&after, local.unwrap_or_else(|| Now::utc(now)), user);
+    let names = Names::new(&after, user, store::people(c, &text::strangers(&after, effects))?);
+    Ok(report(&b, names, batch, effects))
 }
 
 /// What a change did, read with the `names` from after it.
@@ -513,9 +572,42 @@ fn folder_id(b: &Board, path: &str, what: &str) -> Result<FolderId, ApiError> {
 }
 
 pub fn rename(w: &WriteCx, a: RenameArgs) -> Result<Write, ApiError> {
-    let b = w.board;
-    let id = folder_id(b, &a.folder, "改名")?;
-    Ok(vec![Op::FolderUpdate { id, name: Some(a.name), parent_id: None, sort_key: None }].into())
+    let invalid = |m: String| ApiError::invalid(m, Some("name".into()));
+    let op = match (a.folder, a.attachment) {
+        (Some(folder), None) => {
+            let id = folder_id(w.board, &folder, "改名")?;
+            Op::FolderUpdate { id, name: Some(Name::try_from(a.name).map_err(invalid)?), parent_id: None, sort_key: None }
+        }
+        (None, Some(id)) => Op::AttachmentUpdate { id, name: Some(FileName::try_from(a.name).map_err(invalid)?), task_id: None },
+        _ => return Err(ApiError::invalid("folder 和 attachment 给且只给一个", None)),
+    };
+    Ok(vec![op].into())
+}
+
+/// Saves the file, recorded as the user's upload, and attaches it: as `PUT /files/{id}` and
+/// `attachment.add` do, in the change's transaction.
+pub fn attach(w: &WriteCx, a: AttachArgs) -> Result<Write, ApiError> {
+    let t = find_task(w.board, &a.task)?;
+    let bytes = BASE64.decode(a.data.as_bytes()).map_err(|_| ApiError::invalid("data 不是有效的 base64", Some("data".into())))?;
+    let size = u32::try_from(bytes.len()).map_or(Err("文件不能超过 20 MB"), FileSize::try_from);
+    let size = size.map_err(|m| ApiError::invalid(m, Some("data".into())))?;
+    let media_type = match a.media_type {
+        Some(t) => t,
+        None => {
+            let guessed = mime_guess::from_path(a.name.as_str()).first_raw().unwrap_or("application/octet-stream");
+            MediaType::try_from(guessed.to_owned()).expect("mime_guess gives media types")
+        }
+    };
+    let id = AttachmentId(Uuid::now_v7());
+    // Rolled back with the rest when syncing through a drive: the change's commit records it.
+    store::insert_file(w.c, id, &StoredFile { owner: w.user.to_owned(), media_type: media_type.clone(), size }, w.now, false)?;
+    // Left for the daily sweep when the change fails after this.
+    w.files.write(id, &bytes)?;
+    Ok(vec![Op::AttachmentAdd { id, name: a.name, media_type, size, task_id: Some(t.id), job_id: None }].into())
+}
+
+pub fn detach(_: &WriteCx, a: DetachArgs) -> Result<Write, ApiError> {
+    Ok(a.attachments.into_iter().map(|id| Op::AttachmentDelete { id }).collect::<Vec<_>>().into())
 }
 
 pub fn move_to(w: &WriteCx, a: MoveArgs) -> Result<Write, ApiError> {

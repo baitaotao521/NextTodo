@@ -37,7 +37,7 @@ const server = {
   ended: new Set<Cookie>(),
   held: undefined as { path: string; enter(): void; until: Promise<void> } | undefined,
 };
-vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+async function answer(url: string, init: RequestInit) {
   const path = url.replace("/api/v1", "");
   // The cookie goes with the request as it is sent.
   const sent = server.cookie;
@@ -53,9 +53,12 @@ vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
     return new Response(null, { status: 204 });
   }
   if (path === "/me") return json(sent.user);
-  if (path === "/snapshot") return json({ user: sent.user.id, seq: 0, folders: [], tasks: [], dependencies: [], ai_jobs: [], shares: [], people: [] });
+  if (path === "/snapshot") return json({ user: sent.user.id, seq: 0, folders: [], tasks: [], dependencies: [], attachments: [], ai_jobs: [], shares: [], people: [] });
   throw new Error(`${init.method} ${path}`);
-});
+}
+vi.stubGlobal("fetch", answer);
+// What the page reaches the app's own server with, on Android.
+vi.stubGlobal("window", { CapacitorWebFetch: answer });
 
 /** Holds back requests to `path`: `entered` once one has come, until `release`. */
 function hold(path: string) {
@@ -96,13 +99,13 @@ const kick = (socket: FakeSocket) => socket.onmessage!({ data: JSON.stringify({ 
 /** Whether the session's tab went back to signing in. */
 function watch(s: Session) {
   const heard = { signedOut: false };
-  s.listen({ rejected() {}, arrived() {}, unsaved() {}, appFailed() {}, signedOut: () => (heard.signedOut = true) });
+  s.listen({ rejected() {}, arrived() {}, unsaved() {}, appFailed() {}, told() {}, signedOut: () => (heard.signedOut = true) });
   return heard;
 }
 
 /** How many copies and pending changes of the user's are on the device. */
 async function saved(u: User) {
-  const db = await openDB("nexttodo", 1);
+  const db = await openDB("nexttodo", 2);
   const mine = IDBKeyRange.bound([u.id], [u.id, []]);
   return [await db.count("copies", mine), await db.count("outbox", mine)];
 }
@@ -233,7 +236,7 @@ test("a tab left open while the site's storage is cleared leaves a later sign-in
   const a = await signIn(u);
   localStorage.clear();
   server.cookie = null;
-  const db = await openDB("nexttodo", 1);
+  const db = await openDB("nexttodo", 2);
   await Promise.all([db.clear("copies"), db.clear("outbox")]);
   // Signed in again a minute later.
   const now = Date.now;
@@ -323,6 +326,20 @@ test("a sign-out cut short is finished when the app opens next, with what it lef
   expect(await (await tab()).resume()).toBeNull();
   expect([server.cookie, login(), marked(), await saved(u)]).toEqual([null, null, undefined, [0, 0]]);
   await vi.waitFor(() => expect(heard.signedOut).toBe(true));
+});
+
+test("a server's sign-out cut short is not finished on the app's own server, signed in to already", async () => {
+  const u = user(22);
+  await signIn(u);
+  // Signed out offline, then into local mode: the page holds the session the app's server gave it.
+  localStorage.setItem("nexttodo.signedOut", JSON.stringify(login()));
+  const local = { user: user(23) };
+  server.cookie = local;
+  const Session = await tab();
+  const http = await import("./api/http");
+  http.connectLocal("", "the app's session");
+  const s = await Session.open(() => http.api<User>("GET", "/me"));
+  expect([s.user.id, server.ended.has(local), marked(), await saved(u)]).toEqual([local.user.id, false, undefined, [0, 0]]);
 });
 
 test("finishing a sign-out deletes the user's data also when the sign-in is gone", async () => {

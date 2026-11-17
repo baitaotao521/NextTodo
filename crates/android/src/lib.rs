@@ -3,12 +3,14 @@
 //! the user.
 
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
 use android_logger::Config;
 use anyhow::Context;
 use jni::objects::{JClass, JString};
 use jni::{Env, EnvUnowned};
+use nexttodo_core::model::FileName;
 use nexttodo_server::backup;
 use nexttodo_server::error::for_user;
 use nexttodo_server::local::{Local, StartError};
@@ -19,7 +21,7 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> =
     LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime"));
 
 /// The server once started, until the process ends.
-static SERVER: Mutex<Option<Local>> = Mutex::new(None);
+static SERVER: Mutex<Option<Arc<Local>>> = Mutex::new(None);
 
 /// Runs the native method that does `what`: an error becomes a Java exception with what to tell the
 /// user (`error::for_user`), a panic one of its own.
@@ -38,9 +40,14 @@ fn path(env: &Env, s: &JString) -> anyhow::Result<PathBuf> {
     Ok(s.try_to_string(env)?.into())
 }
 
+/// The server, once started.
+fn server() -> Option<Arc<Local>> {
+    SERVER.lock().expect("server lock").clone()
+}
+
 /// Runs `f` on the server started.
 fn running<T>(f: impl FnOnce(&Local) -> anyhow::Result<T>) -> anyhow::Result<T> {
-    f(SERVER.lock().expect("server lock").as_ref().context("本机模式没有在运行")?)
+    f(server().context("本机模式没有在运行")?.as_ref())
 }
 
 /// Starts the server on the data directory `dir`, the first time: `{url, user, epoch}` as JSON, or
@@ -55,7 +62,7 @@ pub extern "system" fn Java_cn_juniexd_nexttodo_LocalServer_start<'a>(env: EnvUn
         let mut server = SERVER.lock().expect("server lock");
         let started = match server.take() {
             Some(local) => Ok(local),
-            None => RUNTIME.block_on(Local::start(&dir)),
+            None => RUNTIME.block_on(Local::start(&dir)).map(Arc::new),
         };
         let reply = match started {
             Ok(local) => {
@@ -75,6 +82,32 @@ pub extern "system" fn Java_cn_juniexd_nexttodo_LocalServer_session<'a>(env: Env
     run(env, "登录本机模式", |env| {
         let token = running(|local| Ok(RUNTIME.block_on(local.session())?))?;
         Ok(JString::from_str(env, token)?)
+    })
+}
+
+/// Has the server look at the drive now, when it syncs through one, waiting up to `wait_ms` for what
+/// is new there to be read in (docs/local.md#运行). Nothing while it is not running.
+#[allow(unsafe_code, reason = "JNI finds a native method by its unmangled name")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_cn_juniexd_nexttodo_LocalServer_pull<'a>(env: EnvUnowned<'a>, _: JClass<'a>, wait_ms: i64) {
+    run(env, "同步", |_| {
+        if let Some(local) = server() {
+            RUNTIME.block_on(local.pull(Duration::from_millis(wait_ms.try_into()?)));
+        }
+        Ok(())
+    })
+}
+
+/// Whether the server syncs through a drive: what the app sends then needs the network. Not while it is
+/// not running.
+#[allow(unsafe_code, reason = "JNI finds a native method by its unmangled name")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_cn_juniexd_nexttodo_LocalServer_syncing<'a>(env: EnvUnowned<'a>, _: JClass<'a>) -> bool {
+    run(env, "读取同步的状态", |_| {
+        Ok(match server() {
+            Some(local) => RUNTIME.block_on(local.syncing()),
+            None => false,
+        })
     })
 }
 
@@ -99,6 +132,20 @@ pub extern "system" fn Java_cn_juniexd_nexttodo_LocalServer_prepare<'a>(
     from: JString<'a>,
 ) {
     run(env, "读取备份", |env| backup::prepare(&path(env, &dir)?, &path(env, &from)?))
+}
+
+/// What an attachment called `name` is called as a file (docs/desktop.md#附件), to open or save.
+#[allow(unsafe_code, reason = "JNI finds a native method by its unmangled name")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_cn_juniexd_nexttodo_LocalServer_fileName<'a>(
+    env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    name: JString<'a>,
+) -> JString<'a> {
+    run(env, "读取附件名称", |env| {
+        let name = FileName::try_from(name.try_to_string(env)?).map_err(anyhow::Error::msg)?;
+        Ok(JString::from_str(env, name.on_disk())?)
+    })
 }
 
 /// The user's go-ahead: the backup prepared replaces the data in `dir` when the app starts next.

@@ -434,7 +434,7 @@ pub fn prompt(board: &Board, folder: Option<FolderId>, notes: &[Value], local_ti
     }
     // Not `organize::chat`, which would add the notes' instructions for a JSON answer as well.
     let system = if notes.is_empty() { SYSTEM.to_owned() } else { format!("{SYSTEM}\n\n{NOTES}") };
-    Prompt { system, user: serde_json::to_string_pretty(&input).expect("JSON values serialize") }
+    Prompt { system, user: serde_json::to_string_pretty(&input).expect("JSON values serialize"), pictures: Vec::new() }
 }
 
 #[cfg(test)]
