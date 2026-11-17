@@ -63,6 +63,12 @@ impl TestApp {
     }
 
     pub async fn call(&self, method: &str, path: &str, auth: Option<&str>, body: Option<Value>) -> Reply {
+        let (status, headers, text) = self.call_raw(method, path, auth, body).await;
+        Reply { status, headers, body: if text.is_empty() { Value::Null } else { serde_json::from_str(&text).unwrap() } }
+    }
+
+    /// The answer as it came, JSON or not: a chat streams its events as they are written.
+    pub async fn call_raw(&self, method: &str, path: &str, auth: Option<&str>, body: Option<Value>) -> (StatusCode, HeaderMap, String) {
         let mut req = Request::builder().method(method).uri(format!("/api/v1{path}"));
         if let Some(secret) = auth {
             req = req.header(header::AUTHORIZATION, format!("Bearer {secret}"));
@@ -72,7 +78,7 @@ impl TestApp {
         let res = self.app.clone().oneshot(req).await.unwrap();
         let (status, headers) = (res.status(), res.headers().clone());
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        Reply { status, headers, body: if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() } }
+        (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
     }
 
     pub async fn login(&self, username: &str, password: &str) -> Reply {

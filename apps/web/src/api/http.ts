@@ -136,6 +136,30 @@ export async function api<T>(method: string, path: string, body?: unknown, timeo
   throw new ApiError(res.status, error.code ?? "error", error.message ?? `服务器错误（${res.status}），请稍后重试`, field);
 }
 
+/** Fetches `path` and hands back the answer as it arrives, for a reply the page reads as it is
+ * written (`docs/ai.md#对话`). No timeout of its own: a model may take its time, and `signal` ends
+ * the wait. */
+export async function apiStream(path: string, body: unknown, signal: AbortSignal): Promise<Response> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (server.token) headers.Authorization = `Bearer ${server.token}`;
+  // The Android app's plain `fetch` goes through CapacitorHttp, which answers whole; its own
+  // WebView fetch reads as the answer comes, and the server lets the page's origin read it.
+  const send = app === "desktop" ? tauriFetch : app === "android" && window.CapacitorWebFetch ? window.CapacitorWebFetch : fetch;
+  try {
+    return await send(`${server.url}/api/v1${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+      ...(app === "desktop" && server.local && DIRECT),
+    });
+  } catch (e) {
+    // Closed by the page, not the network's doing.
+    if (signal.aborted) throw e;
+    throw new ApiError(0, OFFLINE, server.local ? "无法连接 App 内置的服务端，请重试" : "无法连接服务器，请检查网络后重试");
+  }
+}
+
 /** The server's error, or nothing when a proxy in between answers with a page of its own. */
 function parseError(text: string): Partial<ErrorBody> {
   try {

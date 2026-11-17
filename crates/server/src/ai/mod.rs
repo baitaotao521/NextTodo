@@ -1,6 +1,7 @@
 //! AI organizing: jobs turned into tasks in the background, or into suggestions for a folder's
 //! tasks, with each user's own model. See `docs/ai.md`.
 
+pub mod chat;
 pub mod llm;
 pub mod organize;
 pub mod secret;
@@ -10,10 +11,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use nexttodo_core::board::{Board, Now};
-use nexttodo_core::model::{AiJobId, FolderId, JobKind, JobState, MutationId, NoteText, Suggestion};
+use nexttodo_core::model::{AiJobId, FolderId, JobKind, JobState, JobText, LocalTime, MutationId, NoteText, Suggestion};
 use nexttodo_core::ops::Op;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
@@ -601,4 +604,135 @@ pub async fn run(
     let config = checked(config)?;
     let turn = st.ai.claim(&auth.user_id).ok_or_else(|| ApiError::conflict("正在整理另一条请求，请稍后重试"))?;
     if start(&st, turn, id, config).await? { Ok(StatusCode::ACCEPTED) } else { Err(ApiError::conflict("这条请求不在等待整理")) }
+}
+
+// The chat.
+
+#[derive(Deserialize)]
+pub struct ChatQuery {
+    folder_id: Option<FolderId>,
+}
+
+/// Checks that `folder` is one the user sees, `None` being the root.
+fn seen(c: &Connection, owner: &str, folder: Option<FolderId>) -> Result<(), ApiError> {
+    if let Some(f) = folder
+        && !store::snapshot(c, owner)?.folders.iter().any(|seen| seen.id == f)
+    {
+        return Err(ApiError::not_found("文件夹不存在"));
+    }
+    Ok(())
+}
+
+/// The conversation kept in `folder`, oldest first.
+pub async fn get_chat(State(st): State<AppState>, auth: Auth, Query(q): Query<ChatQuery>) -> Result<Json<Vec<chat::Message>>, ApiError> {
+    auth.require_device()?;
+    st.db
+        .call(move |c| {
+            seen(c, &auth.user_id, q.folder_id)?;
+            Ok(chat::load(c, &auth.user_id, q.folder_id)?)
+        })
+        .await
+        .map(Json)
+}
+
+/// Forgets the conversation in `folder`.
+pub async fn clear_chat(State(st): State<AppState>, auth: Auth, Query(q): Query<ChatQuery>) -> Result<StatusCode, ApiError> {
+    auth.require_device()?;
+    st.db
+        .call(move |c| {
+            seen(c, &auth.user_id, q.folder_id)?;
+            chat::clear(c, &auth.user_id, q.folder_id)?;
+            Ok(StatusCode::NO_CONTENT)
+        })
+        .await
+}
+
+/// What the user says in a chat, with the settings kept on the device when they are not on the
+/// server, as a job's are handed over.
+#[derive(Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, rename = "AiChatInput")]
+pub struct ChatInput {
+    #[ts(optional)]
+    folder_id: Option<FolderId>,
+    text: JobText,
+    local_time: LocalTime,
+    #[ts(optional)]
+    config: Option<Config>,
+}
+
+/// One server-sent event carrying `value`.
+fn event(value: Value) -> String {
+    format!("data: {value}\n\n")
+}
+
+/// Says `text` in the conversation of `folder`, and answers with the model's reply as it is
+/// written: server-sent events with `{"delta": "…"}` each, then `{"done": true}` or `{"error": "…"}`.
+/// The conversation is kept on the server, so another device carries it on.
+pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json<ChatInput>) -> Result<Response, ApiError> {
+    auth.require_device()?;
+    let folder = input.folder_id;
+    let config = match input.config {
+        Some(config) => checked(config)?,
+        None => {
+            let (owner, ai) = (auth.user_id.clone(), st.ai.clone());
+            let Some(k) = st.db.call(move |c| Ok(kept(c, &owner)?)).await? else {
+                return Err(ApiError::conflict("还没有配置 AI 整理用的模型"));
+            };
+            let key = k.key(ai.secret.as_ref(), &auth.user_id).ok_or_else(|| ApiError::conflict(UNOPENED))?;
+            k.config(key)
+        }
+    };
+    let (now, owner, text, local_time) =
+        (st.clock.now(), auth.user_id.clone(), input.text.as_str().to_owned(), input.local_time.as_str().to_owned());
+    let prompt = st
+        .db
+        .call(move |c| {
+            seen(c, &owner, folder)?;
+            let mut history = chat::load(c, &owner, folder)?;
+            let said = chat::add(c, &owner, folder, chat::Role::User, &text, now)?;
+            history.push(said);
+            let snap = store::snapshot(c, &owner)?;
+            let board = Board::new(&snap, Now::utc(now), &owner);
+            let notes = notes_along(&board, &store::ai_notes(c, &owner)?, folder);
+            Ok(chat::prompt(&board, folder, &notes, &local_time, &history))
+        })
+        .await?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    {
+        let (api, st, owner, tx) = (st.ai.api.clone(), st.clone(), auth.user_id, tx);
+        tokio::spawn(async move {
+            let began = Instant::now();
+            let push = tx.clone();
+            let answer = tokio::task::spawn_blocking(move || {
+                api.chat_stream(&config, &prompt, false, TIMEOUT, &mut |piece| push.blocking_send(event(json!({ "delta": piece }))).is_ok())
+            })
+            .await;
+            let (last, ok) = match answer {
+                Ok(Ok(text)) => {
+                    let now = st.clock.now();
+                    let kept = st.db.call(move |c| Ok(chat::add(c, &owner, folder, chat::Role::Assistant, &text, now)?)).await;
+                    match kept {
+                        Ok(_) => (json!({ "done": true }), true),
+                        Err(e) => (json!({ "error": e.describe() }), false),
+                    }
+                }
+                Ok(Err(f)) => (json!({ "error": f.message }), false),
+                Err(e) => {
+                    tracing::error!(error = %e, "chat task panicked");
+                    (json!({ "error": "服务器错误，请稍后重试" }), false)
+                }
+            };
+            tracing::info!(ms = began.elapsed().as_millis(), ok, "ai chat");
+            let _ = tx.send(event(last)).await;
+        });
+    }
+    let stream =
+        futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|chunk| (Ok::<_, std::io::Error>(chunk), rx)) });
+    let mut response = Response::new(Body::from_stream(stream));
+    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    // Sent whole by a proxy, the chat would be over before any of it showed.
+    response.headers_mut().insert(header::HeaderName::from_static("x-accel-buffering"), HeaderValue::from_static("no"));
+    Ok(response.into_response())
 }

@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 
 use nexttodo_server::ai::{Ai, llm::Https, secret::SecretKey};
 use nexttodo_server::upgrade::{self, Upgrade};
-use nexttodo_server::{AppState, Clock, Db, app, auth, db, start, with_web};
+use nexttodo_server::{AppState, Clock, Db, app, auth, db, page_cors, start, with_web};
 use tracing_subscriber::EnvFilter;
 
 /// The release's version, as `deploy/build.sh` builds it; the crate's for a development build.
@@ -102,6 +102,9 @@ async fn main() -> anyhow::Result<()> {
                 Some(dir) => with_web(app(state), dir),
                 None => app(state),
             };
+            // The Android app's page is at `https://localhost`, another origin. Its own fetch reads
+            // the chat's answer as it is written; other origins get nothing.
+            let router = router.layer(page_cors());
             tracing::info!(%listen, version = VERSION, "listening");
             let stop = ready(upgrade.clone());
             let serving = started.serve(router).with_graceful_shutdown(async {

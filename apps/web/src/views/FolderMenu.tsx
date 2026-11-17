@@ -3,7 +3,7 @@
 
 import { DropdownMenu } from "radix-ui";
 import { Ellipsis, FolderInput, FolderPlus, ListChecks, NotebookPen, Pencil, Sparkles, Trash2, Users } from "lucide-react";
-import { type ReactElement, type ReactNode, useContext, useEffect, useRef, useState } from "react";
+import { type ReactElement, type ReactNode, useContext, useRef, useState } from "react";
 import { v7 as uuidv7 } from "uuid";
 import { useLocation } from "wouter";
 import type { FolderId } from "../api/types/FolderId";
@@ -11,17 +11,16 @@ import type { Op } from "../api/types/Op";
 import { aiReady } from "../ai";
 import { lastKey } from "../domain/apply";
 import { inLocalMode } from "../local";
-import { localTime } from "../domain/dates";
 import { rekey } from "../domain/reorder";
-import { checkFolderName, checkJobText } from "../domain/text";
+import { checkFolderName } from "../domain/text";
 import { useCommit, useSession, useUndo, useView } from "../session";
 import { useBack } from "../ui/back";
-import { Modal, RootContext, Tip, useFeedback } from "../ui/feedback";
-import { composing } from "../ui/keys";
+import { RootContext, Tip, useFeedback } from "../ui/feedback";
 import { Icon } from "../ui/icons";
 import { ContextMenu, type MenuItem, itemClass } from "../ui/menu";
 import { useAiNote } from "./AiNotes";
 import { useBatch } from "./batch";
+import { AiChat } from "./Chat";
 import { folderUrl, settingsUrl } from "./nav";
 import { FolderPicker } from "./pickers";
 import { SharePanel, lost, shareable, sharer } from "./share";
@@ -67,82 +66,21 @@ export function usePlaceFolder() {
   };
 }
 
-/** What a tidying asks for unless told otherwise. */
-const TIDY = "把标题改清楚，描述改成简洁的书面语，补上漏掉的先后关系。";
-
 /** Asks what to do with the tasks directly in `folder` and hands them to AI, which suggests it
  * (docs/ai.md#整理文件夹); `panel` is where it asks. */
 function useTidy(folder: FolderId | null): { start(): void; panel: ReactNode } {
   const { snack } = useFeedback();
-  const commit = useCommit();
-  const { user, store } = useSession();
+  const { user } = useSession();
   const [, navigate] = useLocation();
-  const [asking, setAsking] = useState(false);
+  const [open, setOpen] = useState(false);
   const start = async () => {
-    if (!store.getView().board.contents(folder).length) return snack("这里没有事项");
     if (!(await aiReady(user.id))) {
       snack("先选好 AI 整理用的模型");
       return navigate(settingsUrl("ai"));
     }
-    setAsking(true);
+    setOpen(true);
   };
-  const submit = (text: string) => {
-    const op = { op: "ai_job.create", id: uuidv7(), kind: "tidy", text, local_time: localTime(new Date()), ...(folder && { folder_id: folder }) } as const;
-    if (commit([op])) snack("已提交整理，完成后在列表顶部确认建议");
-  };
-  return { start, panel: asking && <TidyRequest onSubmit={submit} onClose={() => setAsking(false)} /> };
-}
-
-/** The request for a tidying, in a box of many lines: Enter starts a new one, Ctrl or ⌘ + Enter submits. */
-function TidyRequest({ onSubmit, onClose }: { onSubmit(text: string): void; onClose(): void }) {
-  const [text, setText] = useState(TIDY);
-  const [error, setError] = useState("");
-  const area = useRef<HTMLTextAreaElement>(null);
-  // At the end of what is there, to add to it.
-  useEffect(() => area.current!.setSelectionRange(TIDY.length, TIDY.length), []);
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const c = checkJobText(text);
-    if (!c.ok) return setError(c.error);
-    onSubmit(c.value);
-    onClose();
-  };
-  return (
-    <Modal title="AI 整理事项" onClose={onClose} focus={area}>
-      <form onSubmit={submit}>
-        <label className={`field${error ? " error" : ""}`}>
-          要求
-          <textarea
-            ref={area}
-            className="job-text"
-            rows={5}
-            value={text}
-            aria-invalid={error ? true : undefined}
-            onChange={(e) => (setText(e.target.value), setError(""))}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !composing(e)) {
-                e.preventDefault();
-                e.currentTarget.form!.requestSubmit();
-              }
-            }}
-          />
-          {error ? (
-            <span className="hint error-text" role="alert">
-              {error}
-            </span>
-          ) : (
-            <span className="hint">新建、修改、完成、删除、移动事项，调整先后和顺序都可以，执行前由你逐条确认</span>
-          )}
-        </label>
-        <div className="actions">
-          <button type="button" className="text-btn" onClick={onClose}>
-            取消
-          </button>
-          <button className="filled-btn">开始整理</button>
-        </div>
-      </form>
-    </Modal>
-  );
+  return { start, panel: open && <AiChat folder={folder} onClose={() => setOpen(false)} /> };
 }
 
 /** The actions on `folder`, and the panel that moving, tidying or sharing it opens; in the root, only

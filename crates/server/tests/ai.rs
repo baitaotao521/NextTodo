@@ -57,6 +57,19 @@ impl Api for Fake {
         answer.map_err(|message| Failure { status: Some(401), message })
     }
 
+    fn chat_stream(&self, c: &Config, prompt: &Prompt, _: bool, _: Duration, on: &mut dyn FnMut(&str) -> bool) -> Result<String, Failure> {
+        self.asked.lock().unwrap().push((c.api_key.clone(), prompt.user.clone()));
+        let answer = self.answers.lock().unwrap().pop_front().expect("an answer queued");
+        let text = answer.map_err(|message| Failure { status: Some(401), message })?;
+        let chars: Vec<char> = text.chars().collect();
+        for piece in chars.chunks(4) {
+            if !on(&piece.iter().collect::<String>()) {
+                break;
+            }
+        }
+        Ok(text)
+    }
+
     fn models(&self, _: Endpoint) -> Result<Vec<String>, Failure> {
         Ok(vec!["model-a".into(), "model-b".into()])
     }
@@ -539,4 +552,77 @@ async fn a_job_is_given_the_users_own_notes_from_the_root_down_to_its_folder() {
     assert!(listed(t.call("GET", "/ai/notes", Some(&s), None).await.body).contains(&"不相干".to_owned()));
     t.call("PUT", "/ai/notes", Some(&s), Some(note(Value::Null, " "))).await;
     assert!(!listed(t.call("GET", "/ai/notes", Some(&s), None).await.body).contains(&"标题简短".to_owned()));
+}
+
+#[tokio::test]
+async fn a_chat_streams_its_answer_and_keeps_the_conversation() {
+    let (t, fake) = server();
+    let s = t.admin().await;
+    t.ok(&s, "add", json!({ "title": "读第三章", "folder": "/读书" })).await;
+    let snap = t.snapshot(&s).await;
+    let folder = snap["folders"][0]["id"].as_str().unwrap().to_owned();
+    let said = || json!({ "folder_id": folder, "text": "帮我看看先做什么", "local_time": "2026-11-04 16:30 星期三" });
+
+    // No model yet: the chat says so before it starts.
+    let (status, ..) = t.call_raw("POST", "/ai/chat", Some(&s), Some(said())).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    t.call("PUT", "/ai/settings", Some(&s), Some(config())).await;
+    fake.answer(Ok("先读 #1 第三章，再写读书笔记。"));
+    let (status, headers, body) = t.call_raw("POST", "/ai/chat", Some(&s), Some(said())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers["content-type"], "text/event-stream");
+    assert!(body.contains("\"delta\""), "{body}");
+    assert!(body.contains("\"done\":true"), "{body}");
+    assert!(body.ends_with("\n\n"), "{body}");
+
+    // What the model was shown: the folder, its open task and the user's message.
+    let shown: Value = serde_json::from_str(&fake.asked().pop().unwrap().1).unwrap();
+    assert_eq!(shown["folder"], "/读书");
+    assert_eq!(shown["open_tasks"][0]["number"], 1);
+    assert_eq!(shown["open_tasks"][0]["title"], "读第三章");
+    assert_eq!(shown["messages"].as_array().unwrap().last().unwrap()["content"], "帮我看看先做什么");
+
+    // Both sides are kept, for this device and the next.
+    let chat = t.call("GET", &format!("/ai/chat?folder_id={folder}"), Some(&s), None).await.body;
+    let messages = chat.as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["content"], "先读 #1 第三章，再写读书笔记。");
+
+    // Another user neither sees the folder nor its chat; the owner clears it.
+    let bob = t.user(&s, "bob").await;
+    assert_eq!(t.call("GET", &format!("/ai/chat?folder_id={folder}"), Some(&bob), None).await.status, StatusCode::NOT_FOUND);
+    // API tokens are for agents, which have no business with the chat.
+    let token = t.call("POST", "/tokens", Some(&s), Some(json!({ "name": "Claude Code", "scope": "write" }))).await.body;
+    let token = token["secret"].as_str().unwrap();
+    assert_eq!(t.call("GET", "/ai/chat", Some(token), None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(t.call_raw("POST", "/ai/chat", Some(token), Some(said())).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(t.call("DELETE", &format!("/ai/chat?folder_id={folder}"), Some(&s), None).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(t.call("GET", &format!("/ai/chat?folder_id={folder}"), Some(&s), None).await.body, json!([]));
+
+    // A failed answer is an event too, and the user's message stays for the retry.
+    fake.answer(Err("接口返回 401：invalid api key"));
+    let (status, _, body) = t.call_raw("POST", "/ai/chat", Some(&s), Some(said())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("invalid api key"), "{body}");
+    let chat = t.call("GET", &format!("/ai/chat?folder_id={folder}"), Some(&s), None).await.body;
+    assert_eq!(chat.as_array().unwrap().len(), 1);
+    assert_eq!(chat[0]["role"], "user");
+}
+
+#[tokio::test]
+async fn a_chat_takes_the_settings_a_device_keeps() {
+    let fake = Arc::new(Fake::default());
+    let t = TestApp::with_ai(Ai::new(None, fake.clone()));
+    let s = t.admin().await;
+    fake.answer(Ok("好的。"));
+    let body = json!({ "text": "你好", "local_time": "2026-11-04 16:30 星期三", "config": config() });
+    let (status, _, text) = t.call_raw("POST", "/ai/chat", Some(&s), Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(text.contains("\"done\":true"), "{text}");
+    assert_eq!(fake.asked()[0].0, "sk-test-1234");
+    // Kept as the conversation's, on the server, though the settings are the device's.
+    assert_eq!(t.call("GET", "/ai/chat", Some(&s), None).await.body.as_array().unwrap().len(), 2);
 }

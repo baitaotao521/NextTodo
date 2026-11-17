@@ -15,7 +15,7 @@ import type { Task } from "../api/types/Task";
 import { lastKey } from "../domain/apply";
 import { matches } from "../domain/board";
 import { aiReady, setAiMode, useAiMode } from "../ai";
-import { type DueKind, dueKind, formatDay, localTime } from "../domain/dates";
+import { type DueKind, dueKind, formatDay } from "../domain/dates";
 import { checkJobText, checkTitle } from "../domain/text";
 import { useCommit, useSession, useView } from "../session";
 import { draft, keepDraft } from "../sync/drafts";
@@ -29,6 +29,7 @@ import { useLeave } from "../ui/leave";
 import { useWide } from "../ui/hooks";
 import { useTaskActions } from "./actions";
 import { useListed } from "./batch";
+import { AiChat } from "./Chat";
 import { useRowDrag } from "./drag";
 import { useNewFolder, usePlaceFolder } from "./FolderMenu";
 import { useMarks } from "./marks";
@@ -287,6 +288,8 @@ export function QuickAdd({ folder }: { folder?: FolderId | null }) {
   const [picking, setPicking] = useState(false);
   const [tall, setTall] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  /** What the chat below the bar starts with, once the text is handed over; `null` for no chat. */
+  const [chat, setChat] = useState<string | null>(null);
   const into = folder !== undefined ? folder : target && board.folder(target) ? target : null;
   const area = useRef<HTMLTextAreaElement>(null);
   const focus = () => area.current?.focus();
@@ -332,17 +335,15 @@ export function QuickAdd({ folder }: { folder?: FolderId | null }) {
     requestAnimationFrame(focus);
   };
 
-  /** Hands the text to AI organizing; whether it went. */
+  /** Hands the text to the AI, in a chat that answers as it is written; whether it went. */
   const organize = () => {
     const c = checkJobText(title);
     if (!c.ok) {
       snack(c.error);
       return false;
     }
-    const op: Op = { op: "ai_job.create", id: uuidv7(), text: c.value, local_time: localTime(new Date()), ...(into && { folder_id: into }) };
-    if (!commit([op])) return false;
+    setChat(c.value);
     edit("");
-    snack("已交给 AI 整理");
     return true;
   };
 
@@ -429,6 +430,7 @@ export function QuickAdd({ folder }: { folder?: FolderId | null }) {
           {send}
         </Editor>
       )}
+      {chat !== null && <AiChat folder={into} initial={chat} onClose={() => setChat(null)} />}
       {picking && <FolderPicker mode="add" current={into} onPick={setTarget} onClose={() => setPicking(false)} />}
     </>
   );

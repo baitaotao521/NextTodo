@@ -168,6 +168,19 @@ AI 整理的[说明](ai.md#说明)，每个用户每个文件夹（含根目录�
 
 唯一索引 `(user_id, ifnull(folder_id, ''))`。
 
+### ai_messages
+
+AI [对话](ai.md#对话)的消息，每个用户每个文件夹一段。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| id | TEXT PK | 服务端生成 |
+| owner_id | TEXT → users | 说话的用户；共享文件夹里各成员各聊各的 |
+| folder_id | TEXT → folders，可空 | `NULL` 是根目录；删除文件夹时级联删除，撤销删除文件夹不恢复 |
+| role | TEXT | `user` 或 `assistant` |
+| content | TEXT | 消息原文；用户的最多 10000 字 |
+| created_at | INTEGER | 毫秒；读取时从旧到新，最多 200 条，更早的删掉 |
+
 ### mutations
 
 改动日志，用于幂等、增量同步和撤销。

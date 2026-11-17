@@ -117,6 +117,17 @@ impl Hub {
     }
 }
 
+/// Lets the Android app's page, at `https://localhost`, call the API with its token and read a
+/// chat's answer as it is written. The page's cookie is `SameSite=Lax`, so other origins get
+/// nothing either way; a token is the app's own.
+pub fn page_cors() -> tower_http::cors::CorsLayer {
+    use axum::http::Method;
+    tower_http::cors::CorsLayer::new()
+        .allow_origin(HeaderValue::from_static("https://localhost"))
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+}
+
 pub fn app(state: AppState) -> Router {
     let api = Router::new()
         .route("/auth/register", post(auth::register))
@@ -140,6 +151,7 @@ pub fn app(state: AppState) -> Router {
         .route("/ai/models", post(ai::models))
         .route("/ai/jobs/{id}/run", post(ai::run))
         .route("/ai/notes", get(ai::get_notes).put(ai::put_note))
+        .route("/ai/chat", get(ai::get_chat).post(ai::chat_send).delete(ai::clear_chat))
         .fallback(|| async { ApiError::not_found("接口不存在") });
     let mcp = Router::new()
         .route_service("/mcp", mcp::service(state.clone()))

@@ -36,7 +36,7 @@
 | GET | `/sync` | WebSocket，见[同步协议](#同步协议) |
 | GET | `/tools` | 工具列表，见 [agent 接入](agent.md#工具接口) |
 | POST | `/tools/{name}` | 调用一个工具 |
-| | `/ai/…` | AI 整理的服务商、配置和测试，见 [AI 整理](ai.md#接口) |
+| | `/ai/…` | AI 整理的服务商、配置、测试和[对话](ai.md#对话)，见 [AI 整理](ai.md#接口) |
 
 MCP 端点是 `/mcp`（不在 `/api/v1` 下），见 [agent 接入](agent.md#mcp)。
 

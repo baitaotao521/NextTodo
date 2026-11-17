@@ -22,7 +22,7 @@ App 的页面来自 `https://localhost`，和服务器不同源，所以不用 C
 
 - 登录页多一个“服务器地址”栏，第一次登录时填写，不写协议时按 `https://`。
 - 登录得到的会话令牌和服务器地址存在 Capacitor Preferences（Android 的 SharedPreferences，App 私有）；小组件从同一处读取。App 不参加系统备份（`allowBackup="false"`），令牌不会进云端备份。
-- HTTP 请求加 `Authorization: Bearer <令牌>`，经 Capacitor 的原生 HTTP 发出（`CapacitorHttp`），不受跨域限制，服务端不需要 CORS。Capacitor 不给 POST 等写请求转发 `AbortSignal`，所以网页端请求的 20 秒期限在 App 里只对 GET 有效，登录、注销等写请求要等系统的网络超时。
+- HTTP 请求加 `Authorization: Bearer <令牌>`，经 Capacitor 的原生 HTTP 发出（`CapacitorHttp`），不受跨域限制，服务端不需要 CORS。Capacitor 不给 POST 等写请求转发 `AbortSignal`，所以网页端请求的 20 秒期限在 App 里只对 GET 有效，登录、注销等写请求要等系统的网络超时。AI 对话的流式回复例外：原生 HTTP 要等整段回复，所以这一段用 WebView 自己的 `fetch`，服务端允许来源 `https://localhost` 读取（[对话](ai.md#对话)）。
 - WebSocket 在 `hello` 里带令牌（见 [API](api.md#同步协议)）。
 - 设备名是“NextTodo App · Android”。
 - 退出登录时先删令牌，再清小组件、取消所有提醒（包括通知栏里已经弹出的）、删本机数据；服务器地址保留，下次登录不用再填。下次启动发现没有令牌时，先清掉小组件和提醒；有没做完的退出（“正在退出”的记录）就接着删本机数据，否则是登录失效（比如小组件先收到 401 删了令牌），本机数据和待发改动留着，同一账号再登录时补发。退出记录写下后、令牌删掉前被杀掉的，下次启动补完退出时也删令牌、清小组件和提醒。

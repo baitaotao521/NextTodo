@@ -185,6 +185,20 @@ impl Failure {
 pub trait Api: Send + Sync {
     /// The model's answer, with `json` when the prompt asks for JSON.
     fn chat(&self, c: &Config, prompt: &Prompt, json: bool, timeout: Duration) -> Result<String, Failure>;
+    /// The same answer, giving `on` each piece as it comes, for a chat the user reads as it is
+    /// written; `on` says whether to read on. The whole answer comes back as well.
+    fn chat_stream(
+        &self,
+        c: &Config,
+        prompt: &Prompt,
+        json: bool,
+        timeout: Duration,
+        on: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<String, Failure> {
+        let text = self.chat(c, prompt, json, timeout)?;
+        on(&text);
+        Ok(text)
+    }
     fn models(&self, e: Endpoint) -> Result<Vec<String>, Failure>;
 }
 
@@ -394,6 +408,31 @@ impl Https {
         Ok(answer)
     }
 
+    fn answer_stream(
+        &self,
+        c: &Config,
+        prompt: &Prompt,
+        json: bool,
+        timeout: Duration,
+        on: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<String, Failure> {
+        let p = c.check().map_err(Failure::new)?;
+        let body = self.send(c, agent(timeout, self.public_only).post(c.endpoint().url("/chat/completions")), &body(c, p, prompt, json))?;
+        let streamed = body.mime_type() == Some("text/event-stream");
+        let reader = body.into_with_config().limit(MAX_STREAM).reader();
+        let answer = if streamed {
+            read_stream_to(BufReader::new(reader), on)?
+        } else {
+            let text = read_whole(reader)?;
+            on(&text);
+            text
+        };
+        if answer.len() > MAX_ANSWER {
+            return Err(Failure::new("模型的回复过长"));
+        }
+        Ok(answer)
+    }
+
     fn list(&self, e: Endpoint) -> Result<Vec<String>, Failure> {
         let res = agent(Duration::from_secs(20), self.public_only)
             .get(e.url("/models"))
@@ -413,6 +452,17 @@ impl Api for Https {
         self.answer(c, prompt, json, timeout).map_err(|f| f.without(&c.api_key))
     }
 
+    fn chat_stream(
+        &self,
+        c: &Config,
+        prompt: &Prompt,
+        json: bool,
+        timeout: Duration,
+        on: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<String, Failure> {
+        self.answer_stream(c, prompt, json, timeout, on).map_err(|f| f.without(&c.api_key))
+    }
+
     fn models(&self, e: Endpoint) -> Result<Vec<String>, Failure> {
         self.list(e).map_err(|f| f.without(e.api_key))
     }
@@ -424,6 +474,11 @@ fn unreadable() -> Failure {
 
 /// What a stream of server-sent events adds up to.
 fn read_stream(reader: impl BufRead) -> Result<String, Failure> {
+    read_stream_to(reader, &mut |_| true)
+}
+
+/// The same, giving `on` each piece as it comes; `false` stops reading.
+fn read_stream_to(reader: impl BufRead, on: &mut dyn FnMut(&str) -> bool) -> Result<String, Failure> {
     let mut answer = String::new();
     for line in reader.lines() {
         let line = line.map_err(|e| Failure::new(format!("读取接口回复时出错：{e}")))?;
@@ -439,6 +494,9 @@ fn read_stream(reader: impl BufRead) -> Result<String, Failure> {
             answer.push_str(piece);
             if answer.len() > MAX_ANSWER {
                 return Err(Failure::new("模型的回复过长"));
+            }
+            if !on(piece) {
+                break;
             }
         }
     }
@@ -566,5 +624,30 @@ mod tests {
         assert!(refused(502, "<html>").message.contains("502"));
         assert_eq!(refused(418, "{}").message, refused(418, "<html>").message);
         assert_eq!(read_whole("{\"choices\":[{\"message\":{\"content\":\"好\"}}]}".as_bytes()).unwrap(), "好");
+    }
+
+    #[test]
+    fn gives_a_streams_pieces_as_they_come() {
+        let stream = "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n\
+                      data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n\
+                      data: [DONE]\n";
+        let mut pieces = Vec::new();
+        let answer = read_stream_to(stream.as_bytes(), &mut |piece| {
+            pieces.push(piece.to_owned());
+            true
+        })
+        .unwrap();
+        assert_eq!(answer, "你好");
+        assert_eq!(pieces, ["你", "好"]);
+
+        // The reader gone, what came is enough.
+        let mut seen = Vec::new();
+        let early = read_stream_to(stream.as_bytes(), &mut |piece| {
+            seen.push(piece.to_owned());
+            false
+        })
+        .unwrap();
+        assert_eq!(early, "你");
+        assert_eq!(seen, ["你"]);
     }
 }
