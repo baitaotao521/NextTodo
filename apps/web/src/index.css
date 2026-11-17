@@ -593,41 +593,6 @@ a.text-btn { display: inline-flex; align-items: center; }
 /* A link to the guide on a line of its own, under what it explains. */
 .help-line { margin: 12px 16px 0; text-align: center; font-size: 14px; }
 .settings-page { padding-bottom: 24px; }
-.settings-page.chatlog-page { max-width: 100%; }
-.desk .settings-page.chatlog-page { max-width: 980px; }
-.chatlog { display: grid; gap: 16px; }
-.chatlog-list { min-width: 0; }
-.chatlog-search { margin: 0 0 12px; }
-.chatlog-list .group { margin: 0; }
-.chatlog-row .row-inner { align-items: flex-start; }
-.chatlog-row .token-ic { margin-top: 1px; }
-.chatlog-last { display: block; margin-top: 3px; overflow: hidden; color: var(--on-surface-variant); font-size: 13px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
-.chatlog-detail { min-width: 0; padding: 14px 16px; border-radius: 14px; background: var(--group-bg); }
-.chatlog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.chatlog-head h2 { margin: 0; font-size: 18px; }
-.chatlog-head p { margin: 3px 0 0; color: var(--on-surface-variant); font-size: 13px; }
-.chatlog-actions { display: flex; flex: none; align-items: center; gap: 4px; }
-.chatlog-actions .tonal-btn, .chatlog-actions .text-btn { height: 34px; padding: 0 10px; font-size: 13px; }
-.chatlog-actions .text-btn { display: inline-flex; align-items: center; gap: 4px; }
-.chatlog-actions .text-btn:disabled { opacity: .5; }
-.chatlog-messages { display: flex; flex-direction: column; gap: 10px; }
-.chatlog-msg { padding: 10px 12px; border: 1px solid var(--outline-variant); border-radius: 12px; background: var(--surface); }
-.chatlog-msg.user { background: var(--surface-container); }
-.chatlog-meta { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; color: var(--outline); font-size: 12px; }
-.chatlog-msg > p { margin: 0; white-space: pre-wrap; }
-.chatlog-msg p { margin: 0 0 6px; }
-.chatlog-msg ul, .chatlog-msg ol { margin: 4px 0; padding-left: 20px; }
-.chatlog-msg > :last-child { margin-bottom: 0; }
-.chatlog-ask { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--outline-variant); color: var(--on-surface-variant); font-size: 13px; line-height: 1.5; }
-.chatlog-ask-options { display: block; margin-top: 2px; color: var(--outline); }
-.chatlog-note { margin: 6px 0 0; color: var(--outline); font-size: 12px; }
-@media (min-width: 900px) {
-  .chatlog { grid-template-columns: 340px minmax(0, 1fr); align-items: start; }
-}
-@media (max-width: 899px) {
-  .chatlog-head { flex-direction: column; }
-  .chatlog-actions { width: 100%; }
-}
 .settings-page > :first-child { margin-top: 12px; }
 .settings-page > .group + .group { margin-top: 22px; }
 /* The settings are one column in the middle; their title lines up with it, the scroll's padding

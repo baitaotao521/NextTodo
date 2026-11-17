@@ -2,7 +2,7 @@
 // its "…" button, or by right-clicking it on a computer.
 
 import { DropdownMenu } from "radix-ui";
-import { Ellipsis, FolderInput, FolderPlus, ListChecks, NotebookPen, Pencil, Sparkles, Trash2, Users } from "lucide-react";
+import { Ellipsis, FolderInput, FolderPlus, ListChecks, MessageSquare, NotebookPen, Pencil, Trash2, Users } from "lucide-react";
 import { type ReactElement, type ReactNode, useContext, useRef, useState } from "react";
 import { v7 as uuidv7 } from "uuid";
 import { useLocation } from "wouter";
@@ -66,9 +66,9 @@ export function usePlaceFolder() {
   };
 }
 
-/** Asks what to do with the tasks directly in `folder` and hands them to AI, which suggests it
- * (docs/ai.md#整理文件夹); `panel` is where it asks. */
-function useTidy(folder: FolderId | null): { start(): void; panel: ReactNode } {
+/** Opens the folder's AI conversations: a directory on the left and a new conversation to write in
+ * (docs/ai.md#对话); `panel` is the window. */
+function useAiChat(folder: FolderId | null): { start(): void; panel: ReactNode } {
   const { snack } = useFeedback();
   const { user } = useSession();
   const [, navigate] = useLocation();
@@ -92,7 +92,7 @@ function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: 
   const { prompt, confirm, snack } = useFeedback();
   const newFolder = useNewFolder();
   const place = usePlaceFolder();
-  const tidy = useTidy(folder);
+  const ai = useAiChat(folder);
   const note = useAiNote(folder);
   const [location, navigate] = useLocation();
   const [moving, setMoving] = useState(false);
@@ -101,14 +101,14 @@ function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: 
   if (folder === null) {
     const items = [
       { icon: FolderPlus, label: "新建文件夹", onSelect: () => newFolder(null) },
-      { icon: Sparkles, label: "AI 整理事项", onSelect: tidy.start },
+      { icon: MessageSquare, label: "AI 对话", onSelect: ai.start },
       { icon: NotebookPen, label: "AI 说明", onSelect: note.start },
     ];
     return {
       items,
       panel: (
         <>
-          {tidy.panel}
+          {ai.panel}
           {note.panel}
         </>
       ),
@@ -137,7 +137,7 @@ function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: 
   return {
     items: [
       { icon: FolderPlus, label: "新建子文件夹", onSelect: () => newFolder(f.id) },
-      { icon: Sparkles, label: "AI 整理事项", onSelect: tidy.start },
+      { icon: MessageSquare, label: "AI 对话", onSelect: ai.start },
       { icon: NotebookPen, label: "AI 说明", onSelect: note.start },
       ...(shareable(board, f.id) && !inLocalMode() ? [{ icon: Users, label: "共享…", onSelect: () => setSharing(true) }] : []),
       ...(theirs
@@ -150,7 +150,7 @@ function useFolderActions(folder: FolderId | null): { items: MenuItem[]; panel: 
     ],
     panel: (
       <>
-        {tidy.panel}
+        {ai.panel}
         {note.panel}
         {moving && <FolderPicker mode="move" current={f.parent_id} exclude={f.id} onPick={(parent) => place(f.id, parent, null)} onClose={() => setMoving(false)} />}
         {sharing && <SharePanel folder={f.id} onClose={() => setSharing(false)} />}

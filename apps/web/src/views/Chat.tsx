@@ -21,18 +21,9 @@ import { Proposal } from "./suggestions";
 
 const endpoint = (chat: AiChatId) => `/ai/chat?chat_id=${chat}`;
 
-/** The chats about `folder`: starting a new one, carrying on `chat`, or the newest there. */
-export function AiChat({
-  folder,
-  initial,
-  chat,
-  onClose,
-}: {
-  folder: FolderId | null;
-  initial?: string;
-  chat?: AiChatId;
-  onClose(): void;
-}) {
+/** The conversations about `folder`: a new one to write in, and the directory of the others on the
+ * left, newest first. See docs/ai.md#对话. */
+export function AiChat({ folder, initial, onClose }: { folder: FolderId | null; initial?: string; onClose(): void }) {
   const { user } = useSession();
   const { board } = useView();
   const { snack, confirm } = useFeedback();
@@ -68,22 +59,16 @@ export function AiChat({
     }
   };
 
-  // The folder's conversations, newest first; open the one asked for, or the newest, or a new one.
+  // The folder's conversations, newest first: a new one is where it opens, the directory holds the rest.
   useEffect(() => {
     let here = true;
     started.current = false;
     api<AiChatSummary[]>("GET", "/ai/chats").then(
       (all) => {
         if (!here) return;
-        const inFolder = all.filter((c) => c.folder_id === folder);
-        setChats(inFolder);
-        const pick = initial ? null : chat && inFolder.some((c) => c.id === chat) ? chat : (inFolder[0]?.id ?? null);
-        setChatId(pick);
-        if (pick) {
-          loadMessages(pick);
-        } else {
-          setMessages([]);
-        }
+        setChats(all.filter((c) => c.folder_id === folder));
+        setChatId(null);
+        setMessages([]);
       },
       (e) => {
         if (!here) return;
@@ -96,7 +81,7 @@ export function AiChat({
       here = false;
       stop.current?.abort();
     };
-  }, [folder, chat, initial]);
+  }, [folder, initial]);
 
   // At the newest, and again as an answer is written.
   useEffect(() => {
@@ -345,7 +330,7 @@ export function AiChat({
               <>
                 {!messages.length && !answering && (
                   <p className="chat-hint">
-                    AI 能看到这个文件夹里未完成的事项和你的说明。让它新建、修改、完成、删除或移动事项都可以；它会说明打算怎么改，并在回复下面列出待确认的修改，由你确认后应用。
+                    这是段新对话：左边目录是之前的对话，点一条接着聊。AI 能看到这个文件夹里未完成的事项和你的说明，让它新建、修改、完成、删除或移动事项都可以；它会说明打算怎么改，并在回复下面列出待确认的修改，由你确认后应用。
                   </p>
                 )}
                 {messages.map((m, i) => (
