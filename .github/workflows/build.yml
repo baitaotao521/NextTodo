@@ -45,6 +45,42 @@ jobs:
             target/release/nexttodo
           retention-days: 7
 
+  desktop-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: pnpm install --frozen-lockfile
+      # The updater's signature is not available here: the app is ad-hoc signed, like the local
+      # builds, so that it can still be made and installed by hand. The server image does not carry
+      # /app/desktop.json anyway, so it would not self-update.
+      - name: Build Apple silicon
+        working-directory: apps/desktop
+        run: pnpm tauri build --bundles app,dmg --config '{"version":"0.1.'"$(git rev-list --count HEAD)"'","bundle":{"createUpdaterArtifacts":false}}'
+      - name: Build Intel
+        working-directory: apps/desktop
+        run: pnpm tauri build --target x86_64-apple-darwin --bundles app,dmg --config '{"version":"0.1.'"$(git rev-list --count HEAD)"'","bundle":{"createUpdaterArtifacts":false}}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NextTodo-macos-arm64
+          path: apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NextTodo-macos-x64
+          path: apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          retention-days: 7
+
   image:
     needs: [web, server]
     runs-on: ubuntu-latest
