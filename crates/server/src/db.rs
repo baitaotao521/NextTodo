@@ -24,14 +24,14 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/011_share.sql"),
     include_str!("../migrations/012_start_time.sql"),
     include_str!("../migrations/013_ai_notes.sql"),
-    include_str!("../migrations/014_attachments.sql"),
-    include_str!("../migrations/015_ai_vision.sql"),
-    include_str!("../migrations/016_sync.sql"),
-    include_str!("../migrations/017_ai_chat.sql"),
-    include_str!("../migrations/018_ai_job_chat.sql"),
-    include_str!("../migrations/019_ai_message_job.sql"),
-    include_str!("../migrations/020_ai_message_ask.sql"),
-    include_str!("../migrations/021_ai_chats.sql"),
+    include_str!("../migrations/014_ai_chat.sql"),
+    include_str!("../migrations/015_ai_job_chat.sql"),
+    include_str!("../migrations/016_ai_message_job.sql"),
+    include_str!("../migrations/017_ai_message_ask.sql"),
+    include_str!("../migrations/018_ai_chats.sql"),
+    include_str!("../migrations/019_attachments.sql"),
+    include_str!("../migrations/020_ai_vision.sql"),
+    include_str!("../migrations/021_sync.sql"),
 ];
 
 #[derive(Clone)]
@@ -292,5 +292,39 @@ fn replaced_seq(db: &Path) -> anyhow::Result<i64> {
             Ok(0)
         }
         Err(e) => Err(e).context("无法读取现在的数据库"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Before this branch merged upstream, its migrations took 014–018; upstream's latest release
+    /// still stops at 013, so those are the first five after 013 here and an older branch's
+    /// database takes the three upstream migrations that come after them.
+    #[test]
+    fn a_database_from_the_branch_before_the_merge_takes_the_migrations_it_missed() {
+        let mut c = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..18] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.pragma_update(None, "user_version", 18).unwrap();
+        migrate(&mut c).unwrap();
+        let version: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(version, i64::try_from(MIGRATIONS.len()).unwrap());
+        for table in ["files", "attachments", "server_settings", "sync_state", "sync_runs"] {
+            let exists: i64 =
+                c.query_row("SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?1", [table], |r| r.get(0)).unwrap();
+            assert_eq!(exists, 1, "缺少表 {table}");
+        }
+        let column = |table: &str, name: &str| -> i64 {
+            c.query_row(&format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [name], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(column("ai_settings", "vision"), 1, "缺少 ai_settings.vision");
+        assert_eq!(column("ai_jobs", "run"), 1, "缺少 ai_jobs.run");
+        assert_eq!(column("files", "staged"), 1, "缺少 files.staged");
+        let chats: i64 =
+            c.query_row("SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'ai_chats'", [], |r| r.get(0)).unwrap();
+        assert_eq!(chats, 1, "本分支的 ai_chats 应保留");
     }
 }
