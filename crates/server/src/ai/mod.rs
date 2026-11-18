@@ -457,8 +457,13 @@ async fn organize(st: AppState, turn: Turn, job: AiJobId, config: Config, round:
                     (prompt, Shown::Organize(shown), pictures)
                 }
                 JobKind::Tidy => {
-                    let (prompt, shown) = tidy::prompt(&j, snap, &owner, notes);
-                    (prompt, Shown::Tidy(Box::new(shown)), Vec::new())
+                    // Cloned: the attachments are handed over with `snap`, which they would borrow.
+                    let mut attached: Vec<Attachment> =
+                        snap.attachments.iter().filter(|a| a.holder == Holder::Job(j.id)).cloned().collect();
+                    attached.sort_by_key(|a| a.id);
+                    let refs: Vec<&Attachment> = attached.iter().collect();
+                    let (prompt, shown, pictures) = tidy::prompt(&j, snap, &owner, notes, &refs, vision);
+                    (prompt, Shown::Tidy(Box::new(shown)), pictures)
                 }
             }))
         })
@@ -969,6 +974,9 @@ pub struct ChatInput {
     new_chat: Option<bool>,
     text: JobText,
     local_time: LocalTime,
+    /// What the user attached to this message.
+    #[ts(optional)]
+    attachments: Option<Vec<chat::MessageAttachment>>,
     #[ts(optional)]
     config: Option<Config>,
 }
@@ -995,12 +1003,26 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
             k.config(key)
         }
     };
-    let (now, owner, text) = (st.clock.now(), auth.user_id.clone(), input.text.as_str().to_owned());
+    let (now, owner, text, attachments) =
+        (st.clock.now(), auth.user_id.clone(), input.text.as_str().to_owned(), input.attachments.unwrap_or_default());
+    // What this turn carries: the tidying it may create takes these, not files from earlier turns.
+    let turn_attachments = attachments.clone();
     let local_time = input.local_time;
     let local_time_text = local_time.as_str().to_owned();
-    let (prompt, chat) = st
+    let vision = config.vision;
+    let (prompt, pictures, chat) = st
         .db
         .call(move |c| {
+            // Each attachment's file has to be the user's, with the type and size they said.
+            for a in &attachments {
+                let file = store::load_file(c, a.id)?.ok_or_else(ApiError::file_missing)?;
+                if file.owner != owner {
+                    return Err(ApiError::file_missing());
+                }
+                if file.media_type != a.media_type || file.size != a.size {
+                    return Err(ApiError::invalid("附件与文件不符", None));
+                }
+            }
             let chat = match input.chat_id {
                 Some(id) => {
                     let chat = chat::get(c, &owner, id)?.ok_or_else(|| ApiError::not_found("对话不存在"))?;
@@ -1027,23 +1049,35 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
             };
             seen(c, &owner, chat.folder_id)?;
             let mut history = chat::load(c, &owner, chat.id.clone())?;
-            let said = chat::add(c, &owner, &chat, chat::Role::User, &text, now)?;
+            let said = chat::add(c, &owner, &chat, chat::Role::User, &text, now, &attachments)?;
             history.push(said);
             let snap = store::snapshot(c, &owner)?;
             let board = Board::new(&snap, Now::utc(now), &owner);
             let notes = notes_along(&board, &store::ai_notes(c, &owner)?, chat.folder_id);
-            Ok((chat::prompt(&board, chat.folder_id, &notes, &local_time_text, &history), chat))
+            let (prompt, pictures) = chat::prompt(&board, chat.folder_id, &notes, &local_time_text, &history, vision);
+            Ok((prompt, pictures, chat))
         })
         .await?;
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     {
-        let (api, st, owner, tx, chat) = (st.ai.api.clone(), st.clone(), auth.user_id, tx, chat);
+        let (api, st, owner, tx, chat, mut prompt, pictures, turn_attachments) =
+            (st.ai.api.clone(), st.clone(), auth.user_id, tx, chat, prompt, pictures, turn_attachments);
         let chat_id = chat.id.clone();
         tokio::spawn(async move {
             let began = Instant::now();
             // The conversation is known before the answer: a client that started it can keep it,
             // even when the model fails before its `done`.
             let _ = tx.send(event(json!({ "chat_id": chat_id.clone() }))).await;
+            // The pictures in the user's message, read before the model is asked.
+            let files = st.files.clone();
+            prompt.pictures = match pictures.into_iter().map(|p| p.read(&files)).collect::<std::io::Result<Vec<_>>>() {
+                Ok(pictures) => pictures,
+                Err(e) => {
+                    tracing::error!(error = %e, "reading a picture for the model");
+                    let _ = tx.send(event(json!({ "error": "读取附件里的图片失败" }))).await;
+                    return;
+                }
+            };
             let push = tx.clone();
             let answer = tokio::task::spawn_blocking(move || {
                 let mut hidden = chat::Hidden::default();
@@ -1068,21 +1102,33 @@ pub async fn chat_send(State(st): State<AppState>, auth: Auth, Json(input): Json
                     let done = st
                         .db
                         .call(move |c| {
-                            let message = chat::add(c, &owner, &chat, chat::Role::Assistant, &text, now)?;
+                            let message = chat::add(c, &owner, &chat, chat::Role::Assistant, &text, now, &[])?;
                             let job = if changes {
                                 let messages = chat::load(c, &owner, chat.id.clone())?;
                                 let id = AiJobId(Uuid::now_v7());
-                                let op = Op::AiJobCreate {
+                                let mut ops = vec![Op::AiJobCreate {
                                     id,
                                     kind: Some(JobKind::Tidy),
                                     text: chat::request(&messages),
                                     local_time,
                                     folder_id: chat.folder_id,
                                     chat: Some(true),
-                                };
+                                }];
+                                // This turn's files go with the tidying it creates, so the model
+                                // sees the pictures again when it turns them into suggestions.
+                                for a in &turn_attachments {
+                                    ops.push(Op::AttachmentAdd {
+                                        id: a.id,
+                                        name: a.name.clone(),
+                                        media_type: a.media_type.clone(),
+                                        size: a.size,
+                                        task_id: None,
+                                        job_id: Some(id),
+                                    });
+                                }
                                 let actor = actor(&owner);
-                                let ran = mutate::run(c, &actor, std::slice::from_ref(&op), now)?;
-                                let recorded = mutate::record(c, &actor, MutationId(Uuid::now_v7()), &[op], &ran, now)?;
+                                let ran = mutate::run(c, &actor, &ops, now)?;
+                                let recorded = mutate::record(c, &actor, MutationId(Uuid::now_v7()), &ops, &ran, now)?;
                                 Some((id, recorded.to))
                             } else {
                                 None

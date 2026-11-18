@@ -894,3 +894,35 @@ async fn a_chat_takes_the_settings_a_device_keeps() {
     // Kept as the conversation's, on the server, though the settings are the device's.
     assert_eq!(t.call("GET", "/ai/chat", Some(&s), None).await.body.as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn a_chat_message_keeps_its_attachments_and_their_files_can_be_downloaded() {
+    let (t, fake) = server();
+    let s = t.admin().await;
+    t.call("PUT", "/ai/settings", Some(&s), Some(config())).await;
+    let a = id();
+    assert_eq!(t.upload(&s, &a, "image/png", b"png").await.status, StatusCode::OK);
+    fake.answer(Ok("收到附件。"));
+    let said = json!({
+        "text": "帮我看看这张图",
+        "local_time": "2026-11-04 16:30 星期三",
+        "attachments": [{ "id": a, "name": "图片 1.png", "type": "image/png", "size": 3 }],
+    });
+    let (status, _, body) = t.call_raw("POST", "/ai/chat", Some(&s), Some(said)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("\"done\":true"), "{body}");
+
+    // The message is kept with its attachment; the assistant's has none.
+    let chat = t.call("GET", "/ai/chat", Some(&s), None).await.body;
+    let messages = chat.as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["attachments"], json!([{ "id": a, "name": "图片 1.png", "type": "image/png", "size": 3 }]));
+    assert_eq!(messages[1]["attachments"], json!([]));
+
+    // The file downloads, though it belongs to no task or job.
+    let (status, headers, bytes) = t.download(&s, &a).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, b"png");
+    assert_eq!(headers.get("content-type").unwrap().to_str().unwrap(), "image/png");
+}

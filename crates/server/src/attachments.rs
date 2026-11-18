@@ -126,6 +126,10 @@ pub async fn get_file(State(st): State<AppState>, auth: Auth, Path(id): Path<Str
             if let Some(a) = visible(c, &user, id)? {
                 return Ok(Some((a.name.as_str().to_owned(), a.media_type)));
             }
+            // A chat message's attachment, which belongs to no task or job.
+            if let Some((name, media_type)) = crate::ai::chat::message_file(c, &user, id)? {
+                return Ok(Some((name, media_type)));
+            }
             // Its uploader's until it is attached.
             let unattached = store::load_attachment(c, id)?.is_none();
             Ok(store::load_file(c, id)?.filter(|f| unattached && f.owner == user).map(|f| (id.to_string(), f.media_type)))
@@ -206,7 +210,11 @@ pub fn unused_before(now: i64) -> i64 {
 pub fn clear(c: &mut Connection, files: &Files, now: i64) -> Result<(usize, usize), ApiError> {
     let tx = c.transaction()?;
     let expired: Vec<AttachmentId> = tx
-        .prepare("DELETE FROM files WHERE unused_at < ?1 RETURNING id")?
+        .prepare(
+            "DELETE FROM files WHERE unused_at < ?1
+               AND id NOT IN (SELECT json_extract(value, '$.id') FROM ai_messages, json_each(ai_messages.attachments) WHERE json_valid(ai_messages.attachments))
+             RETURNING id",
+        )?
         .query_map([unused_before(now)], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
     tx.commit()?;

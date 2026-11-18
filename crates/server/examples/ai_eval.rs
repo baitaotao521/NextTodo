@@ -222,7 +222,7 @@ fn main() -> anyhow::Result<()> {
             let expect = if c.input.get("request").is_some() {
                 let data = tidy_data(&c.input);
                 // So that the case is what the server would send.
-                let sent: Value = serde_json::from_str(&tidy::prompt(&data.1, data.0.clone(), ME, notes(&c.input)).0.user)?;
+                let sent: Value = serde_json::from_str(&tidy::prompt(&data.1, data.0.clone(), ME, notes(&c.input), &[], false).0.user)?;
                 anyhow::ensure!(sent == c.input, "{}：服务端发给模型的会是\n{}", c.id, serde_json::to_string_pretty(&sent)?);
                 Kind::Tidy(serde_json::from_value(c.expect).map_err(|e| anyhow::anyhow!("{}：{e}", c.id))?, Box::new(data))
             } else {
@@ -675,7 +675,7 @@ fn ask_tidy(
     run: usize,
 ) -> Outcome {
     let (snap, job) = data;
-    let (_, shown) = tidy::prompt(job, snap.clone(), ME, notes(input));
+    let (_, shown, _) = tidy::prompt(job, snap.clone(), ME, notes(input), &[], false);
     // The input is what the server sends, as checked when it was read.
     let prompt = organize::chat(system.unwrap_or(tidy::SYSTEM), input);
     let (answer, seconds) = chat(config, &prompt);

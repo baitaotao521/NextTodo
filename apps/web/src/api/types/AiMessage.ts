@@ -2,6 +2,7 @@
 import type { AiAsk } from "./AiAsk";
 import type { AiChatId } from "./AiChatId";
 import type { AiJobId } from "./AiJobId";
+import type { AiMessageAttachment } from "./AiMessageAttachment";
 import type { AiRole } from "./AiRole";
 
 export type AiMessage = { id: string, chat_id: AiChatId, role: AiRole, content: string, 
@@ -12,4 +13,8 @@ job_id: AiJobId | null,
 /**
  * The question this reply asks, with the choices it suggests.
  */
-ask: AiAsk | null, created_at: number, };
+ask: AiAsk | null, created_at: number, 
+/**
+ * What the user attached to this message; empty for the assistant's.
+ */
+attachments?: Array<AiMessageAttachment>, };

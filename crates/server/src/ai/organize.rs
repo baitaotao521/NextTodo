@@ -20,9 +20,9 @@ const SHOWN: usize = 50;
 /// The pictures among a job's attachments that go with it when the model sees pictures, in the order
 /// they were added: of the kinds models take, up to a size and a number (docs/ai.md#附件). As
 /// `unseen` in apps/web/src/attach.ts.
-const PICTURE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
-const PICTURE_SIZE: u32 = 5 * 1024 * 1024;
-const PICTURES: usize = 10;
+pub const PICTURE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+pub const PICTURE_SIZE: u32 = 5 * 1024 * 1024;
+pub const PICTURES: usize = 10;
 
 /// The instructions. `examples/ai_eval.rs` tries others in their place (docs/ai.md#评测).
 pub const SYSTEM: &str = r#"你负责把用户随手写下的一段话整理成待办事项。输入是一个 JSON 对象：
@@ -107,6 +107,11 @@ pub struct PictureFile {
 }
 
 impl PictureFile {
+    /// A picture of `id`, as `caption` names it, of `media_type`.
+    pub fn new(caption: String, id: AttachmentId, media_type: String) -> Self {
+        PictureFile { caption, id, media_type }
+    }
+
     pub fn read(self, files: &Files) -> std::io::Result<Picture> {
         let data = STANDARD.encode(files.read(self.id)?);
         Ok(Picture { caption: self.caption, url: format!("data:{};base64,{data}", self.media_type) })

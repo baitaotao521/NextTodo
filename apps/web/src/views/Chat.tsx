@@ -2,23 +2,28 @@
 // server so that another device carries it on. A folder has many of them, listed on the left; it is a
 // page of its own, reached from the main navigation, and the folder switches inside. See docs/ai.md#对话.
 
-import { ChevronDown, CircleAlert, Folder as FolderIcon, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, CircleAlert, File as FileIcon, Folder as FolderIcon, Image as ImageIcon, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { Fragment, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { api, apiStream } from "../api/http";
+import { ApiError, api, apiStream } from "../api/http";
 import type { AiAsk } from "../api/types/AiAsk";
 import type { AiChatId } from "../api/types/AiChatId";
 import type { AiChatSummary } from "../api/types/AiChatSummary";
 import type { AiMessage } from "../api/types/AiMessage";
+import type { AiMessageAttachment } from "../api/types/AiMessageAttachment";
 import type { FolderId } from "../api/types/FolderId";
-import { localAiConfig } from "../ai";
+import { localAiConfig, useAiVision } from "../ai";
+import { filesIn, isPicture, plan, unseen } from "../attach";
 import { ChatEvents } from "../domain/chat";
 import { ago, localTime } from "../domain/dates";
 import { useSession, useView } from "../session";
+import type { Staged } from "../sync/drafts";
+import { dropFiles } from "../sync/files";
 import { forUser, useFeedback } from "../ui/feedback";
 import { Icon } from "../ui/icons";
 import { composing } from "../ui/keys";
 import { Description as Markdown } from "../ui/lazy-markdown";
+import { StagedFiles, useKeepFiles } from "./attachments";
 import { chatUrl } from "./nav";
 import { FolderPicker } from "./pickers";
 import { Proposal } from "./suggestions";
@@ -34,7 +39,7 @@ export function handChat(text: string) {
 /** The conversations about `folder`: a new one to write in, and the directory of the others on the
  * left, newest first. See docs/ai.md#对话. */
 export function AiChat({ folder }: { folder: FolderId | null }) {
-  const { user } = useSession();
+  const { user, files } = useSession();
   const { board } = useView();
   const { snack, confirm } = useFeedback();
   const [, navigate] = useLocation();
@@ -56,6 +61,50 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
   const sending = useRef(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const end = useRef<HTMLDivElement>(null);
+
+  // Files staged to go with the next thing said; kept on the device until the message has them.
+  const [staged, setStaged] = useState<Staged[]>([]);
+  const stage = (list: Staged[]) => setStaged(list);
+  const keepFiles = useKeepFiles();
+  const addFiles = async (list: File[]) => {
+    if (!list.length) return;
+    const kept = await keepFiles(plan(list, staged.map((f) => f.name), snack));
+    if (kept.length) stage([...staged, ...kept]);
+  };
+  const unstage = (f: Staged) => {
+    stage(staged.filter((s) => s.id !== f.id));
+    void dropFiles(user.id, [f.id]);
+  };
+  const pasteOrDrop = {
+    onPaste: (e: React.ClipboardEvent) => {
+      const l = filesIn(e.clipboardData);
+      if (l.length) {
+        e.preventDefault();
+        void addFiles(l);
+      }
+    },
+    onDragOver: (e: React.DragEvent) => e.dataTransfer.types.includes("Files") && e.preventDefault(),
+    onDrop: (e: React.DragEvent) => {
+      const l = filesIn(e.dataTransfer);
+      if (!l.length) return;
+      e.preventDefault();
+      void addFiles(l);
+    },
+  };
+  const vision = useAiVision(user.id, staged.some((f) => isPicture(f.type)));
+  const hidden = vision !== undefined ? unseen(staged, vision) : undefined;
+  // Files staged but not sent are kept only for this message: dropped as the page goes. The latest
+  // `staged` is held in a ref, so that only leaving drops them, not every change of the list.
+  const stagedRef = useRef(staged);
+  useEffect(() => {
+    stagedRef.current = staged;
+  }, [staged]);
+  useEffect(
+    () => () => {
+      if (stagedRef.current.length) void dropFiles(user.id, stagedRef.current.map((f) => f.id));
+    },
+    [user.id],
+  );
 
   const loadMessages = (id: AiChatId) => {
     setMessages(null);
@@ -136,6 +185,19 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
     setBusy(true);
     setError("");
     setAnswering("");
+    // Files staged go with the message, so they are uploaded first; a failure leaves them staged and
+    // the text written, to try again.
+    if (staged.length) {
+      try {
+        for (const f of staged) await files.upload(f.id, f.type);
+      } catch (e) {
+        sending.current = false;
+        setBusy(false);
+        snack(forUser("上传附件", e));
+        return;
+      }
+    }
+    const attachments: AiMessageAttachment[] = staged.map(({ id, name, type, size }) => ({ id, name, type, size }));
     setDraft("");
     setMessages((all) => [
       ...(all ?? []),
@@ -147,6 +209,7 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
         job_id: null,
         ask: null,
         created_at: Date.now(),
+        attachments,
       },
     ]);
     const abort = new AbortController();
@@ -166,6 +229,7 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
           text: said,
           local_time: localTime(new Date()),
           ...(config && { config }),
+          ...(attachments.length && { attachments }),
         },
         abort.signal,
       );
@@ -181,6 +245,8 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
         setError(told);
         return;
       }
+      // The server has the message and its files: none stay staged for it.
+      stage([]);
       if (!res.body) throw new Error("the answer has no body");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -342,7 +408,10 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
                           <Markdown source={m.content} attachments={[]} onChange={() => {}} onAttachment={() => {}} />
                         </Suspense>
                       ) : (
-                        <p className="chat-text">{m.content}</p>
+                        <>
+                          <p className="chat-text">{m.content}</p>
+                          {m.attachments?.length ? <MessageAttachments list={m.attachments} /> : null}
+                        </>
                       )}
                     </div>
                   )}
@@ -374,6 +443,7 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
           )}
         </div>
         <div className="chat-foot">
+          <StagedFiles files={staged} unseen={hidden} onRemove={unstage} />
           <form className="chat-compose" onSubmit={send}>
             <textarea
               ref={area}
@@ -383,6 +453,9 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
               aria-label="发给 AI 的话"
               enterKeyHint="send"
               onChange={(e) => setDraft(e.target.value)}
+              onPaste={pasteOrDrop.onPaste}
+              onDragOver={pasteOrDrop.onDragOver}
+              onDrop={pasteOrDrop.onDrop}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
                   e.preventDefault();
@@ -422,5 +495,84 @@ function AskOptions({ ask, busy, onPick }: { ask: AiAsk; busy: boolean; onPick(o
         ))}
       </div>
     </section>
+  );
+}
+
+/** Downloads `b` as `name` in the browser, without keeping the object URL around. */
+function download(name: string, b: Blob) {
+  const url = URL.createObjectURL(b);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  // Once the browser has taken it.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/** A picture in a chat message: a 56 px square thumbnail whose object URL lives as long as the
+ * component, opening in a tab of its own when tapped. */
+function ChatPicture({ a }: { a: AiMessageAttachment }) {
+  const { id, type } = a;
+  const { files } = useSession();
+  const { snack } = useFeedback();
+  const [shown, setShown] = useState<{ url?: string; failed: boolean }>({ failed: false });
+  useEffect(() => {
+    let live = true;
+    let url: string | undefined;
+    files.blob({ id, type }).then(
+      (b) => {
+        if (!live) return;
+        url = URL.createObjectURL(b);
+        setShown({ url, failed: false });
+      },
+      (e) => {
+        if (!(e instanceof ApiError)) throw e;
+        if (live) setShown({ url: undefined, failed: true });
+      },
+    );
+    return () => {
+      live = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [files, id, type]);
+  return (
+    <button
+      type="button"
+      className="chat-att-img"
+      aria-label={a.name}
+      onClick={() => {
+        if (shown.url) window.open(shown.url, "_blank", "noopener");
+        else if (shown.failed) snack("附件取不到了，请检查网络后重试");
+      }}
+    >
+      {shown.url ? <img src={shown.url} alt={a.name} draggable={false} /> : <Icon of={ImageIcon} size={18} />}
+    </button>
+  );
+}
+
+/** The files a message carries, below what was said: pictures as thumbnails opening in a tab, other
+ * files as rows that download when tapped. */
+function MessageAttachments({ list }: { list: AiMessageAttachment[] }) {
+  const { files } = useSession();
+  const { snack } = useFeedback();
+  const save = (a: AiMessageAttachment) => {
+    files.blob(a).then(
+      (b) => download(a.name, b),
+      (e) => snack(forUser("下载附件", e)),
+    );
+  };
+  return (
+    <div className="chat-atts">
+      {list.map((a) =>
+        isPicture(a.type) ? (
+          <ChatPicture key={a.id} a={a} />
+        ) : (
+          <button key={a.id} type="button" className="chat-att-file" onClick={() => save(a)}>
+            <Icon of={FileIcon} size={14} />
+            <span>{a.name}</span>
+          </button>
+        ),
+      )}
+    </div>
   );
 }

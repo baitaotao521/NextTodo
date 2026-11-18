@@ -121,13 +121,24 @@ export class Files {
     await tx.done;
   }
 
+  /** Uploads one kept file directly, for a chat message, which does not go through the outbox. */
+  async upload(id: string, type: string) {
+    const kept: Kept | undefined = await (await db()).get("files", [this.user, id]);
+    if (!kept) throw new Error("文件不在这台设备上");
+    if (kept.uploaded) return;
+    await fileRequest("PUT", id, this.stopping.signal, { blob: kept.blob, type });
+    await this.update(id, { uploaded: true });
+    this.uploaded.add(id);
+    this.store.flush();
+  }
+
   /** Whether the files of the attachments `m` adds are on the server. */
   has = (m: Mutation) => adds(m).every((a) => this.uploaded.has(a.id));
 
   /** `m` waits for its files: uploads them; again when the server is `missing` them, which until then
    * holds `m` back, from now on. */
   awaiting = (m: Mutation, missing: boolean) => {
-    if (!missing) return this.upload();
+    if (!missing) return this.drain();
     for (const a of adds(m)) {
       this.uploaded.delete(a.id);
       this.lost.add(a.id);
@@ -146,18 +157,19 @@ export class Files {
       await this.update(id, { uploaded: false });
       this.lost.delete(id);
     }
-    this.upload();
+    this.drain();
   }
 
   private wake = () => {
     if (document.visibilityState !== "visible" || !this.timer) return;
     clearTimeout(this.timer);
     this.timer = undefined;
-    this.upload();
+    this.drain();
   };
 
-  /** Asks for the lock, unless asked already; holding it, uploads what the outbox waits for. */
-  private upload() {
+  /** Asks for the lock, unless asked already; holding it, drains the outbox by uploading the files
+   * its changes wait for. */
+  private drain() {
     if (this.requested || this.timer || this.stopped) return;
     this.requested = true;
     void navigator.locks.request(`upload:${this.user}`, async () => {
@@ -192,7 +204,7 @@ export class Files {
   private later() {
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      this.upload();
+      this.drain();
     }, this.retry);
     this.retry = Math.min(this.retry * 2, LAST_RETRY);
   }

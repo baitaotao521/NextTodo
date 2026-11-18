@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use nexttodo_core::board::{Board, Now, Snapshot};
 use nexttodo_core::dag::find_path;
 use nexttodo_core::model::{
-    AiJob, Description, FolderId, NewTask, Period, Reorder, Repeat, RepeatFrom, Suggestion, Task, TaskDeletion, TaskEdit, TaskId, Title,
-    Was,
+    AiJob, Attachment, Description, FolderId, NewTask, Period, Reorder, Repeat, RepeatFrom, Suggestion, Task, TaskDeletion, TaskEdit,
+    TaskId, Title, Was,
 };
 use nexttodo_core::ops::MAX_OPS;
 use serde::Deserialize;
@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::llm::Prompt;
-use super::organize::{chat, due_text, unwrap};
+use super::organize::{NOTES, PICTURE_SIZE, PICTURE_TYPES, PICTURES, PictureFile, due_text, unwrap};
 use crate::error::from_value;
 use crate::tools::args::{EditArgs, PlanRef, RepeatText, TaskRef, WhenText, task_ref};
 use crate::tools::{Edit, edit_fields, new_due};
@@ -85,6 +85,9 @@ pub const SYSTEM: &str = r#"你负责按用户的要求整理一个文件夹里�
 /// Added to the instructions when a description shown refers to attachments.
 pub const REFERENCES: &str = "有的描述里引用了附件，写成 [名称](attachment:…)：改写这些描述时，把引用原样留在新描述里，一个字都不改。";
 
+/// Added to the instructions when the job has attachments.
+pub const ATTACHMENTS: &str = "输入里还有 attachments：用户随要求附上的文件，ref 是附件编号，name 是名称，type 是类型；image 为 true 的是图片，附在这条消息后面，每张前面写明了是第几个附件。看得到的图片里的信息和要求一样，要一并整理成建议；看不清的不要猜。附件不会随建议移动。";
+
 /// What the model was shown: the data as it was then, as the job's user sees it, the folder, and
 /// which of its tasks.
 pub struct Shown {
@@ -106,8 +109,16 @@ enum Seen {
 }
 
 /// The chat for `job`, a tidying of its folder in `snap` with the user's `notes` along the way to it,
-/// and what was shown in it.
-pub fn prompt(job: &AiJob, snap: Snapshot, user: &str, notes: Vec<Value>) -> (Prompt, Shown) {
+/// its `attachments` in the order added, and the pictures among them to go with it when the model has
+/// `vision`; and what was shown in it.
+pub fn prompt(
+    job: &AiJob,
+    snap: Snapshot,
+    user: &str,
+    notes: Vec<Value>,
+    attachments: &[&Attachment],
+    vision: bool,
+) -> (Prompt, Shown, Vec<PictureFile>) {
     let now = Now::utc(job.created_at);
     let board = Board::new(&snap, now.clone(), user);
     let all = board.tasks_in(job.folder_id);
@@ -176,11 +187,32 @@ pub fn prompt(job: &AiJob, snap: Snapshot, user: &str, notes: Vec<Value>) -> (Pr
     if !notes.is_empty() {
         input["notes"] = notes.into();
     }
-    let mut prompt = chat(SYSTEM, &input);
+    // The job's attachments, the pictures among them to go with the request.
+    let mut pictures = Vec::new();
+    let mut listed = Vec::new();
+    for (i, a) in attachments.iter().enumerate() {
+        let r = (i + 1).to_string();
+        let media_type = a.media_type.as_str();
+        let image = vision && PICTURE_TYPES.contains(&media_type) && a.size.get() <= PICTURE_SIZE && pictures.len() < PICTURES;
+        if image {
+            pictures.push(PictureFile::new(format!("附件 {r}：{}", a.name.as_str()), a.id, media_type.to_owned()));
+        }
+        listed.push(json!({ "ref": r, "name": a.name.as_str(), "type": media_type, "image": image }));
+    }
+    if !listed.is_empty() {
+        input["attachments"] = listed.into();
+    }
+    let mut system = SYSTEM.to_owned();
+    for (key, more) in [("notes", NOTES), ("attachments", ATTACHMENTS)] {
+        if input.get(key).is_some() {
+            system = format!("{system}\n\n{more}");
+        }
+    }
+    let mut prompt = Prompt { system, user: serde_json::to_string_pretty(&input).expect("JSON values serialize"), pictures: Vec::new() };
     if referring {
         prompt.system = format!("{}\n\n{REFERENCES}", prompt.system);
     }
-    (prompt, Shown { snap, user: user.to_owned(), now, folder: job.folder_id, tasks })
+    (prompt, Shown { snap, user: user.to_owned(), now, folder: job.folder_id, tasks }, pictures)
 }
 
 /// The references to attachments in a description, `[名称](attachment:<ID>)` with `[`, `]` and `\`
@@ -647,7 +679,7 @@ mod tests {
 
     #[test]
     fn shows_the_folder() {
-        let (prompt, shown) = prompt(&job(), snap(), "me", vec![]);
+        let (prompt, shown, _) = prompt(&job(), snap(), "me", vec![], &[], false);
         let input: Value = serde_json::from_str(&prompt.user).unwrap();
         assert_eq!(input["folder"], "/官网");
         assert_eq!(input["request"], "整理一下");
@@ -670,7 +702,7 @@ mod tests {
     #[test]
     fn gives_the_notes_with_what_to_make_of_them() {
         let notes = vec![json!({ "folder": "/", "text": "标题用英文" }), json!({ "folder": "/官网", "text": "按页面拆开" })];
-        let (prompt, _) = prompt(&job(), snap(), "me", notes.clone());
+        let (prompt, _, _) = prompt(&job(), snap(), "me", notes.clone(), &[], false);
         let input: Value = serde_json::from_str(&prompt.user).unwrap();
         assert_eq!(input["notes"], json!(notes));
         assert_eq!(prompt.system, format!("{SYSTEM}\n\n{}", super::super::organize::NOTES));
@@ -678,7 +710,7 @@ mod tests {
 
     #[test]
     fn reads_each_kind() {
-        let (_, shown) = prompt(&job(), snap(), "me", vec![]);
+        let (_, shown, _) = prompt(&job(), snap(), "me", vec![], &[], false);
         let ok = r#"{"suggestions": [
             {"number": 1, "title": "建好官网", "description": "做一个官网。", "due": "2026-11-20", "requires": ["a"], "reason": "标题以动作开头"},
             {"number": 2, "due": "2026-11-21 09:00", "folder": "/官网/文档", "requires": [1], "drop_requires": [4], "reason": "推迟一天"},
@@ -740,7 +772,7 @@ mod tests {
             "[表格.csv](attachment:00000000-0000-7000-8000-000000000202)",
         );
         s.tasks[0].description = Description::try_from(format!("看 {picture}，还有 {sheet} 和 {picture}")).unwrap();
-        let (prompt, shown) = prompt(&job(), s, "me", vec![]);
+        let (prompt, shown, _) = prompt(&job(), s, "me", vec![], &[], false);
         assert_eq!(prompt.system, format!("{SYSTEM}\n\n{REFERENCES}"));
         // What is left of the picture's is no reference.
         let rewritten = format!("做官网，见 {sheet}，图见 (attachment:00000000-0000-7000-8000-000000000201)");
@@ -752,7 +784,7 @@ mod tests {
 
     #[test]
     fn refuses_what_could_not_be_applied() {
-        let (_, shown) = prompt(&job(), snap(), "me", vec![]);
+        let (_, shown, _) = prompt(&job(), snap(), "me", vec![], &[], false);
         let err = |s: &str| parse(&format!(r#"{{"suggestions": [{s}]}}"#), &shown).err().unwrap();
         assert_eq!(err(r#"{"number": 6, "title": "x", "reason": ""}"#), "结果引用了不在这个文件夹里的事项 #6");
         assert_eq!(err(r#"{"number": 1, "requires": [2], "reason": ""}"#), "建议把 #2 设为 #1 的前置，但这样依赖会成环");
@@ -787,7 +819,7 @@ mod tests {
     #[test]
     fn suggests_no_more_than_one_change_takes() {
         let tasks: Vec<Task> = (1..=50).map(|n| task(n, &format!("t{n}"), json!({}))).collect();
-        let (_, shown) = prompt(&job(), Snapshot { tasks, folders: snap().folders, ..Default::default() }, "me", vec![]);
+        let (_, shown, _) = prompt(&job(), Snapshot { tasks, folders: snap().folders, ..Default::default() }, "me", vec![], &[], false);
         // Each task after every one before it: 1225 links, a DAG still.
         let all: Vec<Value> = (2..=50).map(|n| json!({ "number": n, "requires": (1..n).collect::<Vec<_>>(), "reason": "" })).collect();
         assert_eq!(

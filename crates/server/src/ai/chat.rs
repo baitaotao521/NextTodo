@@ -2,7 +2,7 @@
 //! shown of it. See `docs/ai.md#对话`.
 
 use nexttodo_core::board::Board;
-use nexttodo_core::model::{AiChatId, AiJobId, FolderId, JobText, Task};
+use nexttodo_core::model::{AiChatId, AiJobId, AttachmentId, FileName, FileSize, FolderId, JobText, MediaType, Task};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -10,7 +10,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use super::llm::Prompt;
-use super::organize::due_text;
+use super::organize::{PICTURE_SIZE, PICTURE_TYPES, PICTURES, PictureFile, due_text};
 
 /// How many of the folder's open tasks the model is shown.
 const SHOWN: usize = 50;
@@ -42,6 +42,18 @@ impl Role {
     }
 }
 
+/// A file the user attached to their message: its metadata, by attachment id, kept with the message
+/// for showing it in the conversation (docs/ai.md#附件).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, rename = "AiMessageAttachment")]
+pub struct MessageAttachment {
+    pub id: AttachmentId,
+    pub name: FileName,
+    #[serde(rename = "type")]
+    pub media_type: MediaType,
+    pub size: FileSize,
+}
+
 #[derive(Clone, Serialize, TS)]
 #[ts(export, rename = "AiMessage")]
 pub struct Message {
@@ -54,6 +66,10 @@ pub struct Message {
     /// The question this reply asks, with the choices it suggests.
     pub ask: Option<Ask>,
     pub created_at: i64,
+    /// What the user attached to this message; empty for the assistant's.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<MessageAttachment>>", optional)]
+    pub attachments: Vec<MessageAttachment>,
 }
 
 /// A question the model asks the user, with the choices it suggests; the first is its suggestion.
@@ -183,23 +199,42 @@ pub fn summaries(c: &Connection, owner: &str) -> rusqlite::Result<Vec<Summary>> 
 /// The conversation's messages, oldest first.
 pub fn load(c: &Connection, owner: &str, chat: AiChatId) -> rusqlite::Result<Vec<Message>> {
     let mut stmt = c.prepare_cached(
-        "SELECT id, role, content, created_at, job_id, ask, chat_id FROM ai_messages
+        "SELECT id, role, content, created_at, job_id, ask, chat_id, attachments FROM ai_messages
          WHERE owner_id = ?1 AND chat_id = ?2 ORDER BY created_at DESC, id DESC LIMIT ?3",
     )?;
     let mut messages: Vec<Message> = stmt
         .query_map(params![owner, chat.as_str(), i64::try_from(KEPT).expect("fits")], |r| {
             let role = Role::parse(&r.get::<_, String>(1)?).ok_or(rusqlite::Error::InvalidQuery)?;
             let ask = r.get::<_, Option<String>>(5)?.and_then(|a| serde_json::from_str(&a).ok());
-            Ok(Message { id: r.get(0)?, chat_id: r.get(6)?, role, content: r.get(2)?, created_at: r.get(3)?, job_id: r.get(4)?, ask })
+            let attachments = r.get::<_, Option<String>>(7)?.and_then(|a| serde_json::from_str(&a).ok()).unwrap_or_default();
+            Ok(Message {
+                id: r.get(0)?,
+                chat_id: r.get(6)?,
+                role,
+                content: r.get(2)?,
+                created_at: r.get(3)?,
+                job_id: r.get(4)?,
+                ask,
+                attachments,
+            })
         })?
         .collect::<Result<_, _>>()?;
     messages.reverse();
     Ok(messages)
 }
 
-/// Keeps `content` as the latest message of the conversation, and gives it back with its id. Older
-/// ones than the `KEPT` latest go: they are no longer shown, and the table would only grow.
-pub fn add(c: &Connection, owner: &str, chat: &Chat, role: Role, content: &str, now: i64) -> rusqlite::Result<Message> {
+/// Keeps `content` as the latest message of the conversation, with the files `attachments` the user
+/// put on it, and gives it back with its id. Older ones than the `KEPT` latest go: they are no longer
+/// shown, and the table would only grow.
+pub fn add(
+    c: &Connection,
+    owner: &str,
+    chat: &Chat,
+    role: Role,
+    content: &str,
+    now: i64,
+    attachments: &[MessageAttachment],
+) -> rusqlite::Result<Message> {
     let message = Message {
         id: Uuid::now_v7().to_string(),
         chat_id: chat.id.clone(),
@@ -208,10 +243,20 @@ pub fn add(c: &Connection, owner: &str, chat: &Chat, role: Role, content: &str, 
         job_id: None,
         ask: None,
         created_at: now,
+        attachments: attachments.to_vec(),
     };
     c.execute(
-        "INSERT INTO ai_messages (id, owner_id, folder_id, chat_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![message.id, owner, chat.folder_id, message.chat_id.as_str(), role.as_str(), message.content, message.created_at],
+        "INSERT INTO ai_messages (id, owner_id, folder_id, chat_id, role, content, created_at, attachments) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            message.id,
+            owner,
+            chat.folder_id,
+            message.chat_id.as_str(),
+            role.as_str(),
+            message.content,
+            message.created_at,
+            serde_json::to_string(&message.attachments).expect("attachments serialize"),
+        ],
     )?;
     c.execute(
         "UPDATE ai_chats SET updated_at = max(?2, updated_at + 1) WHERE id = ?1 AND owner_id = ?3",
@@ -224,6 +269,20 @@ pub fn add(c: &Connection, owner: &str, chat: &Chat, role: Role, content: &str, 
         params![owner, message.chat_id.as_str(), i64::try_from(KEPT).expect("fits")],
     )?;
     Ok(message)
+}
+
+/// The name and type of `user`'s attachment `id`, as a chat message of theirs names it: a message's
+/// attachment is shown in the conversation, and its file is downloadable, though it belongs to no
+/// task or job.
+pub fn message_file(c: &Connection, user: &str, id: AttachmentId) -> rusqlite::Result<Option<(String, MediaType)>> {
+    c.query_row(
+        "SELECT json_extract(value, '$.name'), json_extract(value, '$.type')
+         FROM ai_messages, json_each(ai_messages.attachments)
+         WHERE ai_messages.owner_id = ?1 AND json_valid(ai_messages.attachments) AND json_extract(value, '$.id') = ?2",
+        params![user, id.to_string()],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
 }
 
 /// Forgets `chat` and its messages. Its pending jobs go first, in the caller.
@@ -392,9 +451,20 @@ const SYSTEM: &str = r#"你是 NextTodo 里的 AI 助手，在一个文件夹里
 
 const NOTES: &str = "输入里还有 notes：用户写给你的长期要求，按文件夹从外到内排列。回答和说明打算怎么改时照着做；它们和上面的说法不一致时以它们为准，内层的和外层的不一致时以内层的为准。它们不扩大这次要做的事。";
 
+/// Added to the instructions when the user's message has attachments.
+const ATTACHMENTS: &str = "输入里还有 attachments：用户这条消息附上的文件，ref 是附件编号，name 是名称，type 是类型；image 为 true 的是图片，附在这条消息后面，每张前面写明了是第几个附件。图片里的信息和这条消息一样，要一并考虑；看不清的不要猜。提到附件时用它的 ref 指代。";
+
 /// The chat for `folder` in `board`, with the user's `notes` along the way to it and the
-/// conversation `history`, whose last message is the user's new one.
-pub fn prompt(board: &Board, folder: Option<FolderId>, notes: &[Value], local_time: &str, history: &[Message]) -> Prompt {
+/// conversation `history`, whose last message is the user's new one; the pictures among its
+/// attachments, for the model to see when it has `vision`.
+pub fn prompt(
+    board: &Board,
+    folder: Option<FolderId>,
+    notes: &[Value],
+    local_time: &str,
+    history: &[Message],
+    vision: bool,
+) -> (Prompt, Vec<PictureFile>) {
     let open: Vec<&Task> = board.tasks_in(folder).into_iter().filter(|t| t.done_at.is_none()).take(SHOWN).collect();
     let numbers: Vec<i64> = open.iter().map(|t| t.number).collect();
     let tasks: Vec<Value> = open
@@ -432,9 +502,29 @@ pub fn prompt(board: &Board, folder: Option<FolderId>, notes: &[Value], local_ti
     if !notes.is_empty() {
         input["notes"] = notes.into();
     }
+    // The user's last word is the newest message; its attachments go with it.
+    let mut pictures = Vec::new();
+    let mut listed = Vec::new();
+    if let Some(last) = history.last() {
+        for (i, a) in last.attachments.iter().enumerate() {
+            let r = (i + 1).to_string();
+            let media_type = a.media_type.as_str();
+            let image = vision && PICTURE_TYPES.contains(&media_type) && a.size.get() <= PICTURE_SIZE && pictures.len() < PICTURES;
+            if image {
+                pictures.push(PictureFile::new(format!("第 {r} 个附件：{}", a.name.as_str()), a.id, media_type.to_owned()));
+            }
+            listed.push(json!({ "ref": r, "name": a.name.as_str(), "type": media_type, "image": image }));
+        }
+    }
+    if !listed.is_empty() {
+        input["attachments"] = listed.into();
+    }
     // Not `organize::chat`, which would add the notes' instructions for a JSON answer as well.
-    let system = if notes.is_empty() { SYSTEM.to_owned() } else { format!("{SYSTEM}\n\n{NOTES}") };
-    Prompt { system, user: serde_json::to_string_pretty(&input).expect("JSON values serialize"), pictures: Vec::new() }
+    let mut system = if notes.is_empty() { SYSTEM.to_owned() } else { format!("{SYSTEM}\n\n{NOTES}") };
+    if input.get("attachments").is_some() {
+        system = format!("{system}\n\n{ATTACHMENTS}");
+    }
+    (Prompt { system, user: serde_json::to_string_pretty(&input).expect("JSON values serialize"), pictures: Vec::new() }, pictures)
 }
 
 #[cfg(test)]
@@ -486,6 +576,7 @@ mod tests {
                 job_id: None,
                 ask: None,
                 created_at: i,
+                attachments: Vec::new(),
             })
             .collect();
         let asked = request(&messages);
