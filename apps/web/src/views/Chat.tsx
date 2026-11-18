@@ -2,7 +2,7 @@
 // server so that another device carries it on. A folder has many of them, listed on the left; it is a
 // page of its own, reached from the main navigation, and the folder switches inside. See docs/ai.md#对话.
 
-import { ChevronDown, CircleAlert, File as FileIcon, Folder as FolderIcon, Image as ImageIcon, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, CircleAlert, File as FileIcon, Folder as FolderIcon, Image as ImageIcon, ImagePlus, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { Fragment, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { ApiError, api, apiStream } from "../api/http";
@@ -23,7 +23,7 @@ import { forUser, useFeedback } from "../ui/feedback";
 import { Icon } from "../ui/icons";
 import { composing } from "../ui/keys";
 import { Description as Markdown } from "../ui/lazy-markdown";
-import { StagedFiles, useKeepFiles } from "./attachments";
+import { PickFiles, StagedFiles, useKeepFiles } from "./attachments";
 import { chatUrl } from "./nav";
 import { FolderPicker } from "./pickers";
 import { Proposal } from "./suggestions";
@@ -445,6 +445,9 @@ export function AiChat({ folder }: { folder: FolderId | null }) {
         <div className="chat-foot">
           <StagedFiles files={staged} unseen={hidden} onRemove={unstage} />
           <form className="chat-compose" onSubmit={send}>
+            <PickFiles onAdd={addFiles} className="qa-btn icon">
+              <Icon of={ImagePlus} size={18} />
+            </PickFiles>
             <textarea
               ref={area}
               rows={1}

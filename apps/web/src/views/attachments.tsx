@@ -227,6 +227,30 @@ export function useAddFiles() {
 /** Choosing files to add: on a touch screen from the camera, the photos or the files, else from the
  * files. Calls `add` with those chosen. */
 function AddRow({ onAdd }: { onAdd(files: File[]): void }) {
+  return (
+    <PickFiles onAdd={onAdd} className="row add-row" align="start">
+      <div className="row-inner">
+        <Icon of={Plus} />
+        添加附件
+      </div>
+    </PickFiles>
+  );
+}
+
+/** Picking files to add: on a touch screen a menu of camera, photos and files, else the file picker
+ * opens directly. `children` is what the button shows; `className` and `align` go to the button or
+ * its menu. */
+export function PickFiles({
+  onAdd,
+  children,
+  className,
+  align,
+}: {
+  onAdd(files: File[]): void;
+  children: React.ReactNode;
+  className?: string;
+  align?: "start" | "end";
+}) {
   const touch = useMedia("(pointer: coarse)");
   const files = useRef<HTMLInputElement>(null);
   const photos = useRef<HTMLInputElement>(null);
@@ -237,29 +261,23 @@ function AddRow({ onAdd }: { onAdd(files: File[]): void }) {
     e.target.value = "";
     onAdd(list);
   };
-  const inner = (
-    <div className="row-inner">
-      <Icon of={Plus} />
-      添加附件
-    </div>
-  );
   return (
     <>
       {touch ? (
         <MenuButton
-          className="row add-row"
-          align="start"
+          className={className}
+          align={align}
           items={[
             { icon: Camera, label: "拍照", onSelect: () => camera.current!.click() },
             { icon: Images, label: "相册", onSelect: () => photos.current!.click() },
             { icon: FolderOpen, label: "文件", onSelect: () => files.current!.click() },
           ]}
         >
-          {inner}
+          {children}
         </MenuButton>
       ) : (
-        <button className="row add-row" onClick={() => files.current!.click()}>
-          {inner}
+        <button type="button" className={className} onClick={() => files.current!.click()}>
+          {children}
         </button>
       )}
       <input ref={files} type="file" multiple hidden onChange={chosen} />
