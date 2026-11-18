@@ -107,7 +107,7 @@ svg { display: block; flex: none; }
 
 /* ---------- tab bar ---------- */
 .tabbar { position: absolute; z-index: 6; left: 0; right: 0; bottom: 0; height: var(--tabbar-h); padding-bottom: var(--safe-bottom);
-  display: grid; grid-template-columns: repeat(3, 1fr); background: var(--bar-bg); -webkit-backdrop-filter: blur(20px) saturate(1.6); backdrop-filter: blur(20px) saturate(1.6); box-shadow: 0 -.5px 0 var(--outline-variant); }
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--bar-bg); -webkit-backdrop-filter: blur(20px) saturate(1.6); backdrop-filter: blur(20px) saturate(1.6); box-shadow: 0 -.5px 0 var(--outline-variant); }
 .tab { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 12px; font-weight: 500; color: var(--on-surface-variant); }
 .tab-ic { width: 56px; height: 30px; border-radius: 15px; display: grid; place-items: center; transition: background .25s; }
 .tab.on { color: var(--on-surface); }
